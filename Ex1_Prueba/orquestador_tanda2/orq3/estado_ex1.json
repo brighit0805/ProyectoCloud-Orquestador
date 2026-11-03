@@ -1,0 +1,29 @@
+{
+  "slice": "slice-ex1",
+  "vms": [
+    {
+      "nombre": "demo-ex1-vm1",
+      "worker": "worker1"
+    },
+    {
+      "nombre": "demo-ex1-vm2",
+      "worker": "worker2"
+    },
+    {
+      "nombre": "demo-ex1-vm3",
+      "worker": "worker3"
+    },
+    {
+      "nombre": "demo-ex1-vm4",
+      "worker": "worker1"
+    },
+    {
+      "nombre": "demo-ex1-vm5",
+      "worker": "worker2"
+    },
+    {
+      "nombre": "demo-ex1-vm6",
+      "worker": "worker3"
+    }
+  ]
+}

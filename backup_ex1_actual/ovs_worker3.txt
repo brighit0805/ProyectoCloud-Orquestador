@@ -1,0 +1,33 @@
+6f0eb54f-2ce9-4b85-8110-2a5df45533bc
+    Bridge br-int
+        Port gw_vlan200
+            tag: 200
+            Interface gw_vlan200
+                type: internal
+        Port vnet1
+            tag: 3002
+            Interface vnet1
+        Port br-int
+            Interface br-int
+                type: internal
+        Port vnet0
+            tag: 3001
+            Interface vnet0
+        Port dhcp_v100
+            tag: 100
+            Interface dhcp_v100
+                error: "could not open network device dhcp_v100 (No such device)"
+        Port vnet2
+            tag: 3005
+            Interface vnet2
+        Port dhcp_v200
+            tag: 200
+            Interface dhcp_v200
+                error: "could not open network device dhcp_v200 (No such device)"
+        Port gw_vlan100
+            tag: 100
+            Interface gw_vlan100
+                type: internal
+        Port ens4
+            Interface ens4
+    ovs_version: "2.13.8"

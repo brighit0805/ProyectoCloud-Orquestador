@@ -1,0 +1,14 @@
+version: 2
+ethernets:
+  enp0s3:
+    dhcp4: false
+    addresses:
+      - 10.30.2.2/30
+  enp0s4:
+    dhcp4: false
+    addresses:
+      - 10.30.3.1/30
+  enp0s5:
+    dhcp4: false
+    addresses:
+      - 10.30.4.1/30

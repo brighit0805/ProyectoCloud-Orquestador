@@ -1,0 +1,31 @@
+44a77839-8a54-43e0-8ad6-4ccb8b9827e5
+    Bridge br-int
+        Port vnet4
+            tag: 3004
+            Interface vnet4
+        Port vnet0
+            tag: 3000
+            Interface vnet0
+        Port veth_ovs
+            tag: 100
+            Interface veth_ovs
+                error: "could not open network device veth_ovs (No such device)"
+        Port br-int
+            Interface br-int
+                type: internal
+        Port ens4
+            Interface ens4
+        Port vnet1
+            tag: 3003
+            Interface vnet1
+        Port vnet2
+            tag: 3002
+            Interface vnet2
+        Port vnet3
+            tag: 3003
+            Interface vnet3
+        Port veth_ovs_200
+            tag: 200
+            Interface veth_ovs_200
+                error: "could not open network device veth_ovs_200 (No such device)"
+    ovs_version: "2.13.8"

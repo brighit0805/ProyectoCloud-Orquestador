@@ -1,0 +1,40 @@
+
+== worker1 (10.0.10.1) ==
+  [ OK ] SSH sin contraseña (server1)
+  [ OK ] pool 'default': State:          running
+  [AVISO] imagen base cirros-0.6.2.qcow2: YA está en el worker (el paso 2 pide workers sin imágenes)
+  [AVISO] imagen base ubuntu-22.04.qcow2: YA está en el worker (el paso 2 pide workers sin imágenes)
+  [AVISO] quedan discos de despliegues anteriores: demo-ex1-vm1.qcow2, demo-ex1-vm4.qcow2
+  [AVISO] quedan VMs de despliegues anteriores: demo-ex1-vm4, demo-ex1-vm1
+  [ OK ] bridge br-int
+  [ OK ] alcanza al headnode 10.0.10.100 sin etiqueta VLAN
+
+== worker2 (10.0.10.2) ==
+  [ OK ] SSH sin contraseña (server2)
+  [ OK ] pool 'default': State:          running
+  [AVISO] imagen base cirros-0.6.2.qcow2: YA está en el worker (el paso 2 pide workers sin imágenes)
+  [AVISO] imagen base ubuntu-22.04.qcow2: YA está en el worker (el paso 2 pide workers sin imágenes)
+  [AVISO] quedan discos de despliegues anteriores: demo-ex1-vm2.qcow2, demo-ex1-vm5.qcow2
+  [AVISO] quedan VMs de despliegues anteriores: demo-ex1-vm2, demo-ex1-vm5
+  [ OK ] bridge ovs1
+  [ OK ] alcanza al headnode 10.0.10.100 sin etiqueta VLAN
+
+== worker3 (10.0.10.3) ==
+  [ OK ] SSH sin contraseña (server3)
+  [ OK ] pool 'default': State:          running
+  [AVISO] imagen base cirros-0.6.2.qcow2: YA está en el worker (el paso 2 pide workers sin imágenes)
+  [AVISO] imagen base ubuntu-22.04.qcow2: YA está en el worker (el paso 2 pide workers sin imágenes)
+  [AVISO] quedan discos de despliegues anteriores: demo-ex1-vm3.qcow2, demo-ex1-vm6.qcow2
+  [AVISO] quedan VMs de despliegues anteriores: demo-ex1-vm6, demo-ex1-vm3
+  [ OK ] bridge br-int
+  [ OK ] alcanza al headnode 10.0.10.100 sin etiqueta VLAN
+
+== Repositorio de imágenes en server4 ==
+  [ OK ] /home/ubuntu/imagenes-ex1/cirros-0.6.2.qcow2
+  [ OK ] /home/ubuntu/imagenes-ex1/ubuntu-22.04.qcow2
+
+== IPs candidatas para VM1 y VM3 (acceso) ==
+  [ OK ] vm1: 10.0.10.31 no responde (parece libre)
+  [ OK ] vm3: 10.0.10.33 no responde (parece libre)
+
+RESULTADO: listo para desplegar

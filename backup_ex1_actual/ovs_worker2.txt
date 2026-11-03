@@ -1,0 +1,29 @@
+baa8600b-8220-4764-b51b-edaab6f6ac5d
+    Bridge ovs1
+        Port ens4
+            trunks: [100, 200, 3000, 3001, 3002, 3003, 3004, 3005]
+            Interface ens4
+        Port ovs1
+            Interface ovs1
+                type: internal
+        Port vnet1
+            tag: 3001
+            Interface vnet1
+        Port vnet3
+            tag: 3005
+            Interface vnet3
+        Port ovs1-tap1
+            tag: 100
+            Interface ovs1-tap1
+                error: "could not open network device ovs1-tap1 (No such device)"
+        Port vnet2
+            tag: 3004
+            Interface vnet2
+        Port vnet0
+            tag: 3000
+            Interface vnet0
+        Port ovs1-tap2
+            tag: 200
+            Interface ovs1-tap2
+                error: "could not open network device ovs1-tap2 (No such device)"
+    ovs_version: "2.13.8"

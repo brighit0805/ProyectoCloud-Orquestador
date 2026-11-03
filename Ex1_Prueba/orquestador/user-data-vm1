@@ -1,0 +1,15 @@
+#cloud-config
+hostname: demo-ex1-vm1
+manage_etc_hosts: true
+
+users:
+  - name: ubuntu
+    groups: sudo
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    plain_text_passwd: ubuntu
+
+ssh_pwauth: true
+chpasswd:
+  expire: false

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.qcow2
+*.img
+*.iso
+.env
+.DS_Store
+*.zip
