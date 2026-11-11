@@ -102,3 +102,31 @@ por nombre completo o por id.
 
 Persistencia, cola de tareas, autenticación, monitoreo, API REST y OpenStack
 quedan para iteraciones posteriores, según el plan de la arquitectura.
+
+## Driver OpenStack (R3) — en construcción
+
+`slice_orchestrator/driver_openstack.py` despliega los slices en OpenStack usando
+solo sus APIs REST (Keystone, Neutron y Nova), con el flujo del Lab 6. Tiene los
+mismos métodos que `DriverLinux` (contrato en `driver_base.py`), así que
+`desplegar_slice_existente` y `eliminar_slice` funcionan con cualquiera de los dos.
+
+```bash
+python3 demo_openstack.py                        # despliega y elimina; imprime cada petición REST
+python3 demo_openstack.py --fallo                # falla una operación -> rollback, 0 recursos huérfanos
+python3 demo_openstack.py --fallo --reintentos 2 # la misma falla se recupera
+python3 -m unittest discover -s tests -t .       # 67 pruebas (21 del driver OpenStack)
+```
+
+| Operación del orquestador | Petición a OpenStack |
+|---|---|
+| `preparar_slice` | Keystone: `POST /projects`, `PUT /projects/{p}/users/{u}/roles/{r}` |
+| `crear_red` | Neutron: `POST /networks` y `POST /subnets` (una por enlace) |
+| `crear_vm` | Neutron: `POST /ports` (MAC e IP de `direccionamiento`); Nova: `POST /servers` |
+| `eliminar_vm` | Nova: `DELETE /servers/{id}`; Neutron: `DELETE /ports/{id}` |
+| `eliminar_red` / `liberar_slice` | Neutron: `DELETE` subred y red; Keystone: `DELETE /projects/{id}` |
+| `descubrir_hosts` | Nova: `/os-hypervisors/detail` y `/os-availability-zone/detail` |
+
+**Estado de validación:** probado en modo simulado (OpenStack en memoria). Todavía
+NO se ha probado contra el clúster real. Para hacerlo, copie `.env.example` a `.env`,
+abra los túneles SSH del Lab 6, use `ModoOpenStack.REAL` y un proyecto de prueba.
+La VLAN real de cada enlace la asigna Neutron; el VLAN lógico del orquestador no se fuerza.

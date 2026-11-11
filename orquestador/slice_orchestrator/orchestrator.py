@@ -132,6 +132,9 @@ def desplegar_slice_existente(
         # 3) Network Manager: VLAN única por enlace.
         network_manager.asignar_redes(slc, vlan_allocator)
         redes_por_nodo = network_manager.redes_por_nodo(slc)
+        # Drivers con noción de proyecto (OpenStack) lo preparan aquí; DriverLinux no lo necesita.
+        if hasattr(driver, "preparar_slice"):
+            driver.preparar_slice(slc)
 
         # 4) Driver Linux: ejecuta el plan y registra cada recurso concreto
         # inmediatamente, para poder revertir incluso un fallo parcial.
@@ -193,6 +196,7 @@ def desplegar_slice_existente(
                      slc.id, locals().get("paso", "preparación"), exc)
         slc.estado = EstadoSlice.ERROR
         _rollback(slc, hosts_por_id, ejecutados, driver)
+        _liberar_slice_driver(driver, slc)
         vm_placement.liberar_asignacion(slc, hosts)
         vlan_allocator.liberar(slc.id)
         raise DespliegueFallidoError(f"Despliegue de slice '{slc.id}' abortado y revertido: {exc}") from exc
@@ -234,6 +238,16 @@ def _interfaz_acceso(slc: Slice, nodo, config: dict | None):
         mac=mac, ip=ip, prefijo=config.get("prefijo", 24),
         gateway=config["gateway"], vlan=config.get("vlan"))
     return nic, {"vlan": config.get("vlan"), "mac": mac}
+
+
+def _liberar_slice_driver(driver, slc: Slice) -> None:
+    """Pide al driver (si lo soporta) que libere lo propio del slice, p. ej. el
+    proyecto de OpenStack. Un fallo aquí se registra pero no oculta el error original."""
+    if hasattr(driver, "liberar_slice"):
+        try:
+            driver.liberar_slice(slc.id)
+        except Exception as exc:        # noqa: BLE001
+            logger.warning("No se pudo liberar el slice %s en el driver: %s", slc.id, exc)
 
 
 def _rollback(slc: Slice, hosts_por_id: dict[str, Host],
@@ -286,6 +300,7 @@ def eliminar_slice(slc: Slice, hosts: list[Host], driver: DriverLinux | None = N
     for host_id, imagen in sorted({(n.host_id, n.imagen) for n in slc.nodos if n.host_id}):
         driver.liberar_imagen_si_huerfana(hosts_por_id[host_id].uri_libvirt, imagen)
 
+    _liberar_slice_driver(driver, slc)
     vm_placement.liberar_asignacion(slc, hosts)
     vlan_allocator.liberar(slc.id)
     slc.estado = EstadoSlice.ELIMINADO
