@@ -33,7 +33,12 @@ class TipoTopologia(str, Enum):
 
     LINEAL = "lineal"
     ANILLO = "anillo"
+    MALLA = "malla"
+    ARBOL = "arbol"
     MIXTA = "mixta"
+    # Grafo editado a mano que ya no coincide con ninguna figura del catálogo
+    # (R1B, composición de topologías arbitrarias).
+    ARBITRARIA = "arbitraria"
 
 
 @dataclass(frozen=True)
