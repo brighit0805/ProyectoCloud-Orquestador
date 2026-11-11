@@ -1,0 +1,1 @@
+requests>=2.31   # solo el modo REAL del DriverOpenStack; el modo simulado no lo necesita
