@@ -130,3 +130,38 @@ python3 -m unittest discover -s tests -t .       # 67 pruebas (21 del driver Ope
 NO se ha probado contra el clúster real. Para hacerlo, copie `.env.example` a `.env`,
 abra los túneles SSH del Lab 6, use `ModoOpenStack.REAL` y un proyecto de prueba.
 La VLAN real de cada enlace la asigna Neutron; el VLAN lógico del orquestador no se fuerza.
+
+## Interfaz de usuario de consola (R1B)
+
+CLI para gestionar el ciclo de vida de slices, sobre una capa de servicio
+multiusuario (`servicio_slices.py`) que es el precursor mínimo de R1C. Backend:
+driver Linux **simulado**; no toca ningún clúster.
+
+```bash
+python3 demo_r1b.py                                   # recorre los 8 criterios de R1B
+python3 -m slice_orchestrator.cli --help
+python3 -m slice_orchestrator.cli -u ana topologias
+python3 -m slice_orchestrator.cli -u ana slice crear --nombre ex1 --tipo anillo --nodos 4 \
+    --rama vm4:lineal:2 --flavor vm2=cirros --flavor vm6=cirros --internet vm1 --internet vm3 \
+    --zona az-lab --desplegar --estrategia round_robin
+python3 -m slice_orchestrator.cli -u ana slice editar slice-001 --agregar-enlace vm2,vm5
+python3 -m slice_orchestrator.cli -u ana slice exportar slice-001 plantilla.json
+python3 -m slice_orchestrator.cli -u bob slice importar plantilla.json --nombre copia
+python3 -m slice_orchestrator.cli -u ana recursos
+python3 -m slice_orchestrator.cli -u ana consola emitir slice-001 vm3
+```
+
+| Criterio R1B (rúbrica) | Pts | Dónde |
+|---|---|---|
+| Concurrencia de usuarios | 1 | `ServicioSlices` (cerrojo; aislamiento por usuario) |
+| Editar, listar y eliminar slices | 0,5 | `editar_slice`, `listar_slices`, `eliminar_slice` |
+| Topologías predefinidas con capacidad por VM | 0,5 | `listar_topologias`, `listar_flavors`, `capacidad` |
+| Componer y editar slices arbitrarias | 2 | `composicion.py` (injertar, nodos, enlaces, validación) |
+| Exportar / importar plantillas | 0,5 | `exportar_plantilla`, `crear_desde_plantilla` |
+| Consumo de recursos | 0,5 | `consumo_recursos` |
+| Importar imágenes | 0,5 | `importar_imagen` |
+| Tokens de consola | 0,5 | `emitir_token_consola`, `canjear_token_consola` |
+
+Limitaciones conocidas (ver `LEEME_R1B.txt`): sin autenticación real, sin API
+HTTP, sin jobs, el despliegue se serializa, los slices activos no se editan y el
+bus no está implementado.

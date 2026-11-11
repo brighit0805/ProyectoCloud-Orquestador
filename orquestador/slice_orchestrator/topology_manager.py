@@ -51,13 +51,18 @@ class Injerto:
     sobre: str
     tipo: TipoTopologia
     num_nodos: int
+    ramificacion: int = 2      # solo lo usa la topología ÁRBOL
 
 
-def _figura_a_pares(tipo: TipoTopologia, ids: list[str]) -> list[tuple[str, str]]:
+def _figura_a_pares(tipo: TipoTopologia, ids: list[str],
+                    ramificacion: int = 2) -> list[tuple[str, str]]:
     """Dada una figura (lista ordenada de ids), devuelve sus pares enlazados.
 
     Es el único punto donde vive la forma de cada topología del catálogo, de
     modo que añadir una nueva sea añadir una rama aquí.
+
+    ``ramificacion`` solo importa para ÁRBOL: cuántos hijos tiene cada nodo
+    (el primer id es la raíz y los demás se reparten por niveles).
     """
     if tipo == TipoTopologia.LINEAL:
         if len(ids) < 2:
@@ -69,14 +74,26 @@ def _figura_a_pares(tipo: TipoTopologia, ids: list[str]) -> list[tuple[str, str]
             raise ValueError("Un anillo necesita al menos 3 nodos para no duplicar el enlace")
         return [(ids[i], ids[(i + 1) % len(ids)]) for i in range(len(ids))]
 
+    if tipo == TipoTopologia.MALLA:
+        if len(ids) < 3:
+            raise ValueError("Una malla necesita al menos 3 nodos")
+        return [(ids[i], ids[j]) for i in range(len(ids)) for j in range(i + 1, len(ids))]
+
+    if tipo == TipoTopologia.ARBOL:
+        if len(ids) < 3:
+            raise ValueError("Un árbol necesita al menos 3 nodos")
+        if ramificacion < 2:
+            raise ValueError("El factor de ramificación de un árbol debe ser al menos 2")
+        return [(ids[(i - 1) // ramificacion], ids[i]) for i in range(1, len(ids))]
+
     raise ValueError(f"Tipo de topología no soportado como figura: {tipo}")
 
 
 def _crear_enlaces(slice_id: str, tipo: TipoTopologia, ids: list[str],
-                   contador: int) -> tuple[list[Enlace], int]:
+                   contador: int, ramificacion: int = 2) -> tuple[list[Enlace], int]:
     """Materializa los pares de una figura como objetos Enlace."""
     enlaces: list[Enlace] = []
-    for origen, destino in _figura_a_pares(tipo, ids):
+    for origen, destino in _figura_a_pares(tipo, ids, ramificacion):
         enlaces.append(
             Enlace(id=f"{slice_id}-e{contador}", nodo_origen=origen, nodo_destino=destino)
         )
@@ -120,6 +137,7 @@ def construir_topologia(
     flavor_map: dict[str, str] | None = None,
     internet_access: list[str] | None = None,
     injertos: list[Injerto] | None = None,
+    ramificacion: int = 2,
 ) -> Slice:
     """
     Construye la estructura de nodos y enlaces de un slice. No crea nada en
@@ -157,7 +175,7 @@ def construir_topologia(
 
     # --- 2. Enlaces de la topología base ------------------------------------
     enlaces, contador = _crear_enlaces(
-        slice_id, tipo, [n.id for n in nodos], contador=0
+        slice_id, tipo, [n.id for n in nodos], contador=0, ramificacion=ramificacion
     )
 
     # --- 3. Injertos --------------------------------------------------------
@@ -181,7 +199,7 @@ def construir_topologia(
         # la figura del injerto incluye la raíz, que ya existe
         figura = [raiz_id] + [n.id for n in nuevos]
         enlaces_injerto, contador = _crear_enlaces(
-            slice_id, injerto.tipo, figura, contador
+            slice_id, injerto.tipo, figura, contador, injerto.ramificacion
         )
 
         nodos.extend(nuevos)

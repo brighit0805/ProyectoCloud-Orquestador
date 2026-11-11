@@ -53,6 +53,15 @@ class VLANAllocator:
     def liberar(self, slice_id: str) -> None:
         self._reservas.pop(slice_id, None)
 
+    def restaurar(self, slice_id: str, vlans: list[int]) -> None:
+        """Marca como ocupadas las VLAN de un slice ya desplegado (al reconstruir
+        el estado desde el almacenamiento persistente)."""
+        ocupadas = {v for k, valores in self._reservas.items() if k != slice_id for v in valores}
+        repetidas = ocupadas.intersection(vlans)
+        if repetidas:
+            raise RuntimeError(f"VLAN ya reservadas por otro slice: {sorted(repetidas)}")
+        self._reservas[slice_id] = list(vlans)
+
 
 def asignar_redes(slc: Slice, allocator: VLANAllocator) -> dict[str, str]:
     """
