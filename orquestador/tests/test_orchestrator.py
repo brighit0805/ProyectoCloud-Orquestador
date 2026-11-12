@@ -5,6 +5,22 @@ from slice_orchestrator.models import Host, EstadoSlice, TipoTopologia
 from slice_orchestrator.network_manager import VLANAllocator
 from slice_orchestrator.orchestrator import DespliegueFallidoError, desplegar_slice, eliminar_slice
 from slice_orchestrator.topology_manager import construir_topologia
+from slice_orchestrator.vm_placement import EstrategiaPlacement
+
+
+class DriverLinuxConMonitoreo(DriverLinux):
+    """DriverLinux de prueba que ademas sabe 'descubrir_hosts' (como
+    DriverOpenStack), para comprobar que el orquestador SI propaga el
+    driver hacia el Scheduler cuando la estrategia es OBJETIVO (Lab 7)."""
+
+    def __init__(self, hosts_a_reportar, **kwargs):
+        super().__init__(**kwargs)
+        self._hosts_a_reportar = hosts_a_reportar
+        self.llamadas_descubrir_hosts = 0
+
+    def descubrir_hosts(self):
+        self.llamadas_descubrir_hosts += 1
+        return self._hosts_a_reportar
 
 
 def inventario():
@@ -61,6 +77,24 @@ class PruebasOrquestador(unittest.TestCase):
         self.assertFalse(driver.vms_simuladas)
         self.assertFalse(driver.redes_simuladas)
         self.assertNotIn("fallo", vlans._reservas)
+
+    def test_estrategia_objetivo_propaga_driver_para_monitoreo_en_vivo(self):
+        """Lab 7: al desplegar con estrategia OBJETIVO, el orquestador debe
+        pasarle el driver a vm_placement.asignar_hosts para que el
+        ResourceMonitor del Scheduler pueda refrescar el estado REAL de los
+        hosts justo antes de decidir (y no solo usar los datos ya cacheados
+        en la lista de Host que recibe). Antes de la correccion, el driver se
+        descartaba y 'descubrir_hosts' nunca se llamaba."""
+        hosts = inventario()
+        driver = DriverLinuxConMonitoreo(hosts_a_reportar=hosts)
+        vlans = VLANAllocator(3000, 3010)
+        slc = desplegar_slice(
+            "obj1", "obj1", "u", TipoTopologia.LINEAL, 2, hosts, "az-lab",
+            driver=driver, vlan_allocator=vlans,
+            estrategia=EstrategiaPlacement.OBJETIVO,
+        )
+        self.assertEqual(slc.estado, EstadoSlice.ACTIVO)
+        self.assertGreaterEqual(driver.llamadas_descubrir_hosts, 1)
 
 
 if __name__ == "__main__":

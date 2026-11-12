@@ -605,7 +605,13 @@ class DriverOpenStack:
                 id=nombre, nombre=nombre, uri_libvirt=ubicacion(zona, nombre),
                 capacidad_vcpu=int(h["vcpus"]), capacidad_ram_mb=int(h["memory_mb"]),
                 zona_disponibilidad=zona,
-                vcpu_usados=int(h.get("vcpus_used", 0)), ram_usados_mb=int(h.get("memory_mb_used", 0))))
+                vcpu_usados=int(h.get("vcpus_used", 0)), ram_usados_mb=int(h.get("memory_mb_used", 0)),
+                # Disco real del host (Lab 7): Nova expone local_gb / local_gb_used
+                # en el mismo detalle de hipervisor. Si el servidor Nova no los
+                # informa (quedan en 0), el FiltroCapacidadDisco se auto-desactiva
+                # tal como antes (ver Host.disco_disponible_gb en models.py).
+                capacidad_disco_gb=float(h.get("local_gb", 0)),
+                disco_usado_gb=float(h.get("local_gb_used", 0))))
         return hosts
 
 

@@ -70,6 +70,25 @@ class TestContratoYConfiguracion(unittest.TestCase):
         self.assertEqual(hosts[0].uri_libvirt, "openstack://nova:worker1")
         self.assertEqual((hosts[0].capacidad_vcpu, hosts[0].zona_disponibilidad), (4, "nova"))
 
+    def test_descubrir_hosts_lee_disco_real_de_nova(self):
+        """Lab 7: el disco real (local_gb/local_gb_used de Nova) debe llegar
+        a Host.capacidad_disco_gb/disco_usado_gb para que el
+        FiltroCapacidadDisco del scheduler deje de estar deshabilitado."""
+        d = driver_simulado()
+        for h in d.sesion.hipervisores:
+            h["local_gb"] = 9
+            h["local_gb_used"] = 8 if h["hypervisor_hostname"] == "worker3" else 0
+        hosts = {h.id: h for h in d.descubrir_hosts()}
+        self.assertEqual((hosts["worker3"].capacidad_disco_gb, hosts["worker3"].disco_usado_gb), (9.0, 8.0))
+        self.assertEqual(hosts["worker3"].disco_disponible_gb, 1.0)
+        self.assertEqual((hosts["worker1"].capacidad_disco_gb, hosts["worker1"].disco_usado_gb), (9.0, 0.0))
+
+    def test_descubrir_hosts_sin_disco_informado_mantiene_filtro_desactivado(self):
+        """Si Nova no informa local_gb (queda en 0 por defecto en la
+        simulación), el host sigue sin disco informado, igual que antes."""
+        hosts = driver_simulado().descubrir_hosts()
+        self.assertEqual(hosts[0].capacidad_disco_gb, 0.0)
+
 
 class TestDespliegueCompleto(unittest.TestCase):
     def test_anillo_se_despliega_con_el_orquestador_sin_cambios(self):

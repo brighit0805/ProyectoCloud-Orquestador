@@ -130,10 +130,12 @@ class ResourceMonitor:
             if real is not None:
                 h.vcpu_usados = real.vcpu_usados
                 h.ram_usados_mb = real.ram_usados_mb
+                h.disco_usado_gb = real.disco_usado_gb
                 h.ultima_medicion = ahora
                 # Actualizar capacidad si cambio (ej: host reconfigurable)
                 h.capacidad_vcpu = real.capacidad_vcpu
                 h.capacidad_ram_mb = real.capacidad_ram_mb
+                h.capacidad_disco_gb = real.capacidad_disco_gb
         self._ultimo_refresco = ahora
         logger.info("Monitor: estado de %d hosts actualizado", len(hosts))
         return hosts

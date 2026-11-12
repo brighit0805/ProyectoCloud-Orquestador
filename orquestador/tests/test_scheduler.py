@@ -349,6 +349,19 @@ class TestResourceMonitor(unittest.TestCase):
         self.assertEqual(hosts[0].ram_usados_mb, 1000)
         self.assertIsNotNone(hosts[0].ultima_medicion)
 
+    def test_refresca_disco_real(self):
+        """Lab 7: el disco real tambien debe propagarse en cada refresco, no
+        solo vCPU/RAM (antes quedaba desactualizado y el filtro de disco
+        nunca veia datos reales)."""
+        hosts = _hosts_3workers()
+        hosts_reales = _hosts_3workers()
+        hosts_reales[0].capacidad_disco_gb = 9.0
+        hosts_reales[0].disco_usado_gb = 8.0
+        driver = _DriverFalso(hosts_reales)
+        monitor = ResourceMonitor(driver=driver, staleness_s=0)
+        monitor.refrescar(hosts, forzar=True)
+        self.assertEqual((hosts[0].capacidad_disco_gb, hosts[0].disco_usado_gb), (9.0, 8.0))
+
     def test_no_refresca_sin_driver(self):
         hosts = _hosts_3workers()
         monitor = ResourceMonitor(driver=None)

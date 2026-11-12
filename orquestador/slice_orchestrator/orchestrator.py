@@ -119,7 +119,11 @@ def desplegar_slice_existente(
     logger.info("Plan de despliegue calculado para slice %s: %d pasos", slc.id, len(plan["orden_creacion"]))
 
     # 2) VM Placement: decide el host físico de cada VM (multi-host)
-    asignacion = vm_placement.asignar_hosts(slc, hosts, estrategia)
+    # Se propaga el driver para que, en estrategia OBJETIVO, el ResourceMonitor
+    # del scheduler refresque el estado REAL de los hosts justo antes de
+    # decidir (Lab 7). En las estrategias clasicas el driver simplemente se
+    # ignora (asignar_hosts solo lo usa para OBJETIVO).
+    asignacion = vm_placement.asignar_hosts(slc, hosts, estrategia, driver=driver)
     hosts_por_id = {h.id: h for h in hosts}
     if len(hosts_por_id) != len(hosts):
         raise ValueError("Los identificadores de host deben ser únicos")
