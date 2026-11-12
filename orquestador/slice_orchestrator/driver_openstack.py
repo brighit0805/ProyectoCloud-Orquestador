@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import math
 import os
 import re
 import time
@@ -443,37 +444,82 @@ class DriverOpenStack:
             raise DriverOpenStackError(f"No hay id de Glance para la imagen '{imagen}'")
         return id_
 
+    def _listar_flavors(self) -> list[dict]:
+        """Lista los flavors que ya existen en Nova. Aparte para reutilizarla
+        desde sincronizar_catalogo_flavors() y desde la creación automática."""
+        try:
+            return self._api("admin", "GET", self.config.nova + "/flavors/detail").json().get("flavors", [])
+        except DriverOpenStackError as exc:
+            logger.warning("No se pudo listar los flavors de Nova: %s", exc)
+            return []
+
+    def _resolver_o_crear_flavor_exacto(self, vcpu: int, ram_mb: int, disco_gb: float) -> str | None:
+        """Busca un flavor de Nova con EXACTAMENTE el vCPU/RAM/disco pedidos
+        y, si no existe ninguno, lo crea (requiere privilegios de admin, que
+        ya usamos para todo lo demás en este driver).
+
+        A diferencia de la versión anterior de ``sincronizar_catalogo_flavors``
+        (que aceptaba cualquier flavor con disco >= al pedido), esto evita que
+        una VM termine con MÁS disco real del que el scheduler calculó al
+        decidir dónde ubicarla -- encontrado en pruebas reales contra el
+        clúster del curso: se pedían VMs de 1 GB y, al no existir un flavor
+        de exactamente 1 GB, el driver reutilizaba uno de 4 GB, haciendo que
+        el scheduler subestimara cuánto disco real iba a consumir cada VM.
+
+        Nova exige el disco en GB enteros, así que redondeamos hacia arriba
+        (nunca hacia abajo, para no quedarnos cortos frente a lo que la
+        imagen necesita) con ``math.ceil``.
+        """
+        disco_entero = math.ceil(disco_gb)
+        disponibles = self._listar_flavors()
+        exacto = next(
+            (f for f in disponibles
+             if f["vcpus"] == vcpu and f["ram"] == ram_mb and f["disk"] == disco_entero),
+            None,
+        )
+        if exacto:
+            return exacto["id"]
+        nombre = f"auto_{vcpu}vcpu_{ram_mb}mb_{disco_entero}gb"
+        try:
+            r = self._api("admin", "POST", self.config.nova + "/flavors", cuerpo={
+                "flavor": {"name": nombre, "vcpus": vcpu, "ram": ram_mb, "disk": disco_entero},
+            }, esperado=(200, 201))
+        except DriverOpenStackError as exc:
+            logger.warning("No se pudo crear el flavor '%s' en Nova: %s", nombre, exc)
+            return None
+        nuevo = r.json().get("flavor", {})
+        if nuevo.get("id"):
+            logger.info("[OPENSTACK] flavor creado automáticamente en Nova: %s (id=%s, "
+                        "%s vCPU / %s MB / %s GB)", nombre, nuevo["id"], vcpu, ram_mb, disco_entero)
+        return nuevo.get("id")
+
     def sincronizar_catalogo_flavors(self, forzar: bool = False) -> dict[tuple[int, int, float], str]:
-        """Resuelve automáticamente `flavor_por_perfil` consultando Nova, para
-        que el usuario final no tenga que conocer de antemano los IDs de
-        flavor: por cada flavor del catálogo (``models.CATALOGO_FLAVORS``)
-        busca en Nova uno con las mismas vCPU y RAM, y al menos el disco
-        pedido (Nova no deja usar un flavor con menos disco del que la imagen
-        necesita).
+        """Resuelve automáticamente `flavor_por_perfil` para cada flavor del
+        catálogo (``models.CATALOGO_FLAVORS``), consultando Nova y creando el
+        flavor exacto si hace falta (ver ``_resolver_o_crear_flavor_exacto``),
+        para que el usuario final no tenga que conocer de antemano los IDs
+        de flavor ni depender de que el clúster ya tenga uno del tamaño
+        correcto.
 
         Un mapeo puesto a mano en `flavor_por_perfil` al construir el driver
-        NO se pisa (tiene prioridad): esto solo RELLENA lo que falte. Si
-        ningún flavor del catálogo encuentra pareja, usa el primer flavor
-        disponible de Nova como `flavor_id_defecto`, para no bloquear la demo.
+        NO se pisa (tiene prioridad): esto solo RELLENA lo que falte. Si de
+        verdad no se puede resolver ni crear nada (ej. sin permisos), usa el
+        primer flavor disponible de Nova como `flavor_id_defecto`, para no
+        bloquear la demo.
         """
         if self.flavor_por_perfil and not forzar:
             return self.flavor_por_perfil
-        r = self._api("admin", "GET", self.config.nova + "/flavors/detail")
-        disponibles = r.json().get("flavors", [])
         for flavor in CATALOGO_FLAVORS.values():
             clave = (flavor.vcpu, flavor.ram_mb, flavor.disco_gb)
             if clave in self.flavor_por_perfil:
                 continue
-            candidato = next(
-                (f for f in disponibles
-                 if f["vcpus"] == flavor.vcpu and f["ram"] == flavor.ram_mb
-                 and f["disk"] >= flavor.disco_gb),
-                None,
-            )
-            if candidato:
-                self.flavor_por_perfil[clave] = candidato["id"]
-        if self.flavor_id_defecto is None and disponibles:
-            self.flavor_id_defecto = disponibles[0]["id"]
+            id_ = self._resolver_o_crear_flavor_exacto(flavor.vcpu, flavor.ram_mb, flavor.disco_gb)
+            if id_:
+                self.flavor_por_perfil[clave] = id_
+        if self.flavor_id_defecto is None:
+            disponibles = self._listar_flavors()
+            if disponibles:
+                self.flavor_id_defecto = disponibles[0]["id"]
         logger.info("[OPENSTACK] catálogo de flavors sincronizado desde Nova: %s "
                     "(defecto=%s)", self.flavor_por_perfil, self.flavor_id_defecto)
         return self.flavor_por_perfil
@@ -482,10 +528,12 @@ class DriverOpenStack:
         clave = (vcpu, ram_mb, disco_gb)
         id_ = self.flavor_por_perfil.get(clave)
         if not id_ and self.modo == ModoOpenStack.REAL:
-            # Nadie configuró un mapeo manual: lo intentamos resolver solos
-            # contra Nova antes de rendirnos (automatización end-to-end).
-            self.sincronizar_catalogo_flavors()
-            id_ = self.flavor_por_perfil.get(clave)
+            # Nadie configuró un mapeo manual: resolvemos o creamos nosotros
+            # mismos el flavor exacto contra Nova, antes de rendirnos
+            # (automatización end-to-end -- ver _resolver_o_crear_flavor_exacto).
+            id_ = self._resolver_o_crear_flavor_exacto(vcpu, ram_mb, disco_gb)
+            if id_:
+                self.flavor_por_perfil[clave] = id_
         id_ = id_ or self.flavor_id_defecto
         if not id_:
             raise DriverOpenStackError(
@@ -807,6 +855,11 @@ class SesionSimulada:
         # ---- Nova
         if ruta == "/v2.1/flavors/detail" and metodo == "GET":
             return _Resp(200, {"flavors": list(self.flavores)})
+        if ruta == "/v2.1/flavors" and metodo == "POST":
+            item = dict(json["flavor"])
+            item["id"] = self._id("flv")
+            self.flavores.append(item)
+            return _Resp(201, {"flavor": item})
         if ruta == "/v2.1/servers" and metodo == "GET":
             return _Resp(200, {"servers": [{"id": s["id"], "name": s["name"]}
                                             for s in filtrar(self.servidores)]})

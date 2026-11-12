@@ -323,24 +323,35 @@ class TestSincronizarCatalogoFlavors(unittest.TestCase):
             d.sesion.flavores = flavores_nova
         return d
 
-    def test_empareja_por_vcpu_ram_y_disco_suficiente(self):
+    def test_crea_flavor_exacto_cuando_ninguno_coincide_justo(self):
+        """Lab 7 (hallazgo real contra el clúster): un flavor con MÁS disco
+        del pedido ya no sirve como pareja -- si se reutilizara, la VM
+        consumiría más disco real del que el scheduler calculó. En vez de
+        eso, se crea un flavor nuevo del tamaño EXACTO (redondeado al GB
+        entero, porque Nova no admite discos fraccionarios)."""
         d = self.driver_sin_mapeo([
             {"id": "flv-1", "name": "m1.tiny", "vcpus": 1, "ram": 512, "disk": 4},
         ])
         mapeo = d.sincronizar_catalogo_flavors()
-        # ubuntu y cirros piden ambos 1 vCPU / 512 MB en el catálogo
-        self.assertEqual(mapeo[(1, 512, 2.2)], "flv-1")
-        self.assertEqual(mapeo[(1, 512, 1.0)], "flv-1")
+        # ubuntu pide 2.2 GB -> se crea uno de 3 GB (ceil); cirros pide 1.0 -> uno de 1 GB
+        self.assertNotEqual(mapeo[(1, 512, 2.2)], "flv-1")
+        self.assertNotEqual(mapeo[(1, 512, 1.0)], "flv-1")
+        creados = {f["id"]: f for f in d.sesion.flavores}
+        self.assertEqual(creados[mapeo[(1, 512, 2.2)]]["disk"], 3)
+        self.assertEqual(creados[mapeo[(1, 512, 1.0)]]["disk"], 1)
+        self.assertTrue(creados[mapeo[(1, 512, 2.2)]]["name"].startswith("auto_"))
 
-    def test_disco_insuficiente_no_empareja(self):
+    def test_disco_exacto_ya_existente_se_reutiliza(self):
         d = self.driver_sin_mapeo([
             {"id": "flv-chico", "name": "m1.nano", "vcpus": 1, "ram": 512, "disk": 1},
         ])
         mapeo = d.sincronizar_catalogo_flavors()
-        # el flavor de Nova tiene 1 GB de disco; ubuntu pide 2.2 GB: no encaja
-        self.assertNotIn((1, 512, 2.2), mapeo)
-        # cirros pide 1.0 GB: sí encaja (disco de Nova >= pedido)
+        # cirros pide 1.0 GB (redondea a 1): coincide EXACTO con flv-chico, se reutiliza
         self.assertEqual(mapeo[(1, 512, 1.0)], "flv-chico")
+        # ubuntu pide 2.2 GB (redondea a 3): no hay ninguno de 3 GB, se crea uno nuevo
+        self.assertNotEqual(mapeo[(1, 512, 2.2)], "flv-chico")
+        nuevo = next(f for f in d.sesion.flavores if f["id"] == mapeo[(1, 512, 2.2)])
+        self.assertEqual(nuevo["disk"], 3)
 
     def test_sin_coincidencias_usa_el_primero_como_defecto(self):
         d = self.driver_sin_mapeo([
@@ -370,7 +381,24 @@ class TestSincronizarCatalogoFlavors(unittest.TestCase):
             {"id": "flv-1", "name": "m1.tiny", "vcpus": 1, "ram": 512, "disk": 4},
         ])
         d.modo = ModoOpenStack.REAL
-        self.assertEqual(d._resolver_flavor(1, 512, 2.2), "flv-1")
+        # no existe un flavor de EXACTAMENTE 3 GB (ceil de 2.2): se crea uno nuevo,
+        # en vez de reutilizar flv-1 (que tiene más disco del pedido)
+        id_resuelto = d._resolver_flavor(1, 512, 2.2)
+        self.assertNotEqual(id_resuelto, "flv-1")
+        nuevo = next(f for f in d.sesion.flavores if f["id"] == id_resuelto)
+        self.assertEqual(nuevo["disk"], 3)
+        self.assertEqual(nuevo["vcpus"], 1)
+        self.assertEqual(nuevo["ram"], 512)
+
+    def test_modo_real_reutiliza_flavor_de_disco_exacto(self):
+        d = self.driver_sin_mapeo([
+            {"id": "flv-exacto", "name": "m1.exacto", "vcpus": 1, "ram": 512, "disk": 1},
+        ])
+        d.modo = ModoOpenStack.REAL
+        # cirros (1.0 GB, redondea a 1) sí tiene un flavor exacto: lo reutiliza,
+        # no crea uno nuevo
+        self.assertEqual(d._resolver_flavor(1, 512, 1.0), "flv-exacto")
+        self.assertEqual(len(d.sesion.flavores), 1)
 
 
 if __name__ == "__main__":
