@@ -77,6 +77,12 @@ class ConfigOpenStack:
     puerto_nova: int = 58774
     puerto_neutron: int = 59696
     puerto_glance: int = 9292
+    # Placement vive en un host/puerto propio (no sigue el mismo patron de
+    # tunel que keystone/nova/neutron/glance): por defecto el hostname interno
+    # del clúster ("controller") en el puerto estandar 8778. Solo resuelve
+    # desde dentro del clúster (ej. corriendo en el headnode).
+    placement_host: str = "controller"
+    puerto_placement: int = 8778
     dominio_id: str = ""
     proyecto_admin_id: str = ""
     usuario_admin_id: str = ""
@@ -100,6 +106,10 @@ class ConfigOpenStack:
     def glance(self) -> str:
         return f"http://{self.acceso_ip}:{self.puerto_glance}/v2"
 
+    @property
+    def placement(self) -> str:
+        return f"http://{self.placement_host}:{self.puerto_placement}"
+
     @classmethod
     def desde_entorno(cls, env: dict | None = None) -> "ConfigOpenStack":
         e = os.environ if env is None else env
@@ -109,6 +119,8 @@ class ConfigOpenStack:
             puerto_nova=int(e.get("NOVA_PORT", 58774)),
             puerto_neutron=int(e.get("NEUTRON_PORT", 59696)),
             puerto_glance=int(e.get("GLANCE_PORT", 9292)),
+            placement_host=e.get("PLACEMENT_HOST", "controller"),
+            puerto_placement=int(e.get("PLACEMENT_PORT", 8778)),
             dominio_id=e.get("DOMAIN_ID", ""),
             proyecto_admin_id=e.get("ADMIN_PROJECT_ID", ""),
             usuario_admin_id=e.get("ADMIN_USER_ID", ""),
@@ -586,8 +598,55 @@ class DriverOpenStack:
                       extra={"OpenStack-API-Version": "compute " + c.version_compute})
         return r.json()["remote_console"]["url"]
 
+    def _consultar_placement(self, nombre_host: str) -> dict[str, tuple[float, float]] | None:
+        """Consulta la fuente de verdad real que usa Nova para aceptar o
+        rechazar una VM (servicio Placement), no la vista administrativa
+        vieja de ``os-hypervisors/detail``.
+
+        Devuelve, por clase de recurso ('VCPU', 'MEMORY_MB', 'DISK_GB'), la
+        tupla (capacidad_efectiva, usado), donde capacidad_efectiva ya
+        aplica ``(total - reserved) * allocation_ratio`` tal como lo hace
+        Nova. Devuelve ``None`` si Placement no responde o el host no
+        aparece registrado ahi (se usa como respaldo os-hypervisors/detail,
+        ver descubrir_hosts()).
+        """
+        cabecera = {"OpenStack-API-Version": "placement latest"}
+        try:
+            r = self._api("admin", "GET", self.config.placement + "/resource_providers",
+                           params={"name": nombre_host}, extra=cabecera)
+            proveedores = r.json().get("resource_providers", [])
+            if not proveedores:
+                return None
+            uuid = proveedores[0]["uuid"]
+            inv = self._api("admin", "GET",
+                             f"{self.config.placement}/resource_providers/{uuid}/inventories",
+                             extra=cabecera).json().get("inventories", {})
+            uso = self._api("admin", "GET",
+                             f"{self.config.placement}/resource_providers/{uuid}/usages",
+                             extra=cabecera).json().get("usages", {})
+        except (DriverOpenStackError, ValueError, KeyError) as exc:
+            logger.warning("No se pudo consultar Placement para %s: %s", nombre_host, exc)
+            return None
+
+        resultado: dict[str, tuple[float, float]] = {}
+        for clase, datos in inv.items():
+            total = float(datos.get("total", 0))
+            reservado = float(datos.get("reserved", 0))
+            ratio = float(datos.get("allocation_ratio", 1.0))
+            capacidad_efectiva = (total - reservado) * ratio
+            usado = float(uso.get(clase, 0))
+            resultado[clase] = (capacidad_efectiva, usado)
+        return resultado
+
     def descubrir_hosts(self) -> list[Host]:
-        """Inventario de los workers desde Nova (para VM Placement y monitoreo).
+        """Inventario de los workers (para VM Placement y monitoreo).
+
+        Primero intenta leer el estado REAL de cada host desde Placement
+        (la fuente que Nova realmente usa para aceptar o rechazar una VM,
+        via ``select_destinations`` -> allocation candidates). Si Placement
+        no responde o no tiene registrado un host, cae de vuelta a la vista
+        administrativa de Nova (``os-hypervisors/detail``), igual que antes.
+
         Devuelve ``Host`` con ``uri_libvirt = openstack://<zona>:<host>``."""
         c = self.config
         zonas = self._api("admin", "GET", c.nova + "/os-availability-zone/detail").json()
@@ -601,17 +660,36 @@ class DriverOpenStack:
         for h in hip:
             nombre = h["hypervisor_hostname"]
             zona = zona_de.get(nombre, "nova")
+
+            # Valores de respaldo: vista administrativa vieja de Nova.
+            capacidad_vcpu, vcpu_usados = float(h["vcpus"]), float(h.get("vcpus_used", 0))
+            capacidad_ram_mb, ram_usados_mb = float(h["memory_mb"]), float(h.get("memory_mb_used", 0))
+            # Disco: si Nova no informa local_gb (queda en 0), el
+            # FiltroCapacidadDisco se auto-desactiva (ver models.py).
+            capacidad_disco_gb, disco_usado_gb = float(h.get("local_gb", 0)), float(h.get("local_gb_used", 0))
+
+            # OJO: Placement ya aplica su propio allocation_ratio al calcular
+            # la capacidad efectiva (ver _consultar_placement). Si se usa este
+            # Host con un overcommit_vcpu/overcommit_ram adicional (>1.0) en
+            # el scheduler, el overcommit se aplicaria DOS veces. Con el
+            # driver real, dejar overcommit_vcpu/overcommit_ram en 1.0 (el
+            # valor por defecto) y confiar en lo que ya informa Placement.
+            placement = self._consultar_placement(nombre)
+            if placement:
+                if "VCPU" in placement:
+                    capacidad_vcpu, vcpu_usados = placement["VCPU"]
+                if "MEMORY_MB" in placement:
+                    capacidad_ram_mb, ram_usados_mb = placement["MEMORY_MB"]
+                if "DISK_GB" in placement:
+                    capacidad_disco_gb, disco_usado_gb = placement["DISK_GB"]
+
             hosts.append(Host(
                 id=nombre, nombre=nombre, uri_libvirt=ubicacion(zona, nombre),
-                capacidad_vcpu=int(h["vcpus"]), capacidad_ram_mb=int(h["memory_mb"]),
+                capacidad_vcpu=int(capacidad_vcpu), capacidad_ram_mb=int(capacidad_ram_mb),
                 zona_disponibilidad=zona,
-                vcpu_usados=int(h.get("vcpus_used", 0)), ram_usados_mb=int(h.get("memory_mb_used", 0)),
-                # Disco real del host (Lab 7): Nova expone local_gb / local_gb_used
-                # en el mismo detalle de hipervisor. Si el servidor Nova no los
-                # informa (quedan en 0), el FiltroCapacidadDisco se auto-desactiva
-                # tal como antes (ver Host.disco_disponible_gb en models.py).
-                capacidad_disco_gb=float(h.get("local_gb", 0)),
-                disco_usado_gb=float(h.get("local_gb_used", 0))))
+                vcpu_usados=int(vcpu_usados), ram_usados_mb=int(ram_usados_mb),
+                capacidad_disco_gb=capacidad_disco_gb,
+                disco_usado_gb=disco_usado_gb))
         return hosts
 
 

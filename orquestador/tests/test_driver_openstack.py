@@ -15,6 +15,7 @@ from slice_orchestrator.driver_openstack import (
     DriverOpenStackError,
     ModoOpenStack,
     SesionSimulada,
+    _Resp,
     parsear_ubicacion,
     ubicacion,
 )
@@ -27,6 +28,35 @@ from slice_orchestrator.orchestrator import (
 )
 from slice_orchestrator.topology_manager import construir_ex1_topology, construir_topologia
 from slice_orchestrator.vm_placement import EstrategiaPlacement
+
+
+class _SesionPlacementFalsa:
+    """Sesion falsa minima: solo responde lo que _consultar_placement() y
+    descubrir_hosts() necesitan (autenticación, zonas, hipervisores y los
+    tres endpoints de Placement), con datos fabricados a mano para probar
+    el caso real encontrado contra el clúster (ver test de arriba)."""
+
+    def request(self, metodo, url, headers=None, json=None, params=None, timeout=None):
+        if url.endswith("/v3/auth/tokens"):
+            return _Resp(201, {"token": {}}, {"X-Subject-Token": "tok-1"})
+        if url.endswith("/os-availability-zone/detail"):
+            return _Resp(200, {"availabilityZoneInfo": []})
+        if url.endswith("/os-hypervisors/detail"):
+            return _Resp(200, {"hypervisors": [
+                {"hypervisor_hostname": "worker1", "vcpus": 4, "memory_mb": 3935,
+                 "vcpus_used": 1, "memory_mb_used": 1024, "local_gb": 9, "local_gb_used": 4},
+            ]})
+        if url.endswith("/resource_providers") and params == {"name": "worker1"}:
+            return _Resp(200, {"resource_providers": [{"uuid": "uuid-w1", "name": "worker1"}]})
+        if url.endswith("/resource_providers/uuid-w1/inventories"):
+            return _Resp(200, {"inventories": {
+                "VCPU": {"total": 4, "reserved": 0, "allocation_ratio": 16.0},
+                "MEMORY_MB": {"total": 3935, "reserved": 512, "allocation_ratio": 1.5},
+                "DISK_GB": {"total": 9, "reserved": 0, "allocation_ratio": 1.0},
+            }})
+        if url.endswith("/resource_providers/uuid-w1/usages"):
+            return _Resp(200, {"usages": {"VCPU": 2, "MEMORY_MB": 1024, "DISK_GB": 8}})
+        raise AssertionError(f"ruta no simulada en la prueba: {metodo} {url}")
 
 
 def driver_simulado(**kw):
@@ -88,6 +118,33 @@ class TestContratoYConfiguracion(unittest.TestCase):
         simulación), el host sigue sin disco informado, igual que antes."""
         hosts = driver_simulado().descubrir_hosts()
         self.assertEqual(hosts[0].capacidad_disco_gb, 0.0)
+
+    def test_descubrir_hosts_usa_placement_como_fuente_de_verdad(self):
+        """Lab 7 (hallazgo real contra el clúster, confirmado con German):
+        Nova no decide con os-hypervisors/detail, decide con el servicio
+        Placement. Si Placement reporta mas disco usado del que dice la
+        vista administrativa vieja de Nova (ej. por VMs previas cuya
+        asignación no se refleja igual en ambas vistas), el Host debe
+        reflejar el numero de Placement, no el de os-hypervisors/detail."""
+        cfg = ConfigOpenStack(dominio_id="dom", proyecto_admin_id="adm", usuario_admin_id="u-admin",
+                              password_admin="x", rol_admin_id="rol-admin")
+        d = DriverOpenStack(config=cfg, espera_reintento_s=0.0)
+        d.sesion = _SesionPlacementFalsa()
+        hosts = {h.id: h for h in d.descubrir_hosts()}
+        w1 = hosts["worker1"]
+        # os-hypervisors/detail (respaldo) decia local_gb=9/local_gb_used=4
+        # -> 5 GB libres; Placement (fuente real) dice 9 total con 8 usados
+        # -> solo 1 GB libre real. Debe ganar Placement.
+        self.assertEqual((w1.capacidad_disco_gb, w1.disco_usado_gb), (9.0, 8.0))
+        self.assertEqual(w1.disco_disponible_gb, 1.0)
+
+    def test_descubrir_hosts_sin_placement_cae_a_os_hypervisors(self):
+        """Si Placement no responde (404, red caída, etc.), descubrir_hosts
+        no debe fallar: debe seguir usando os-hypervisors/detail como antes
+        (comportamiento de respaldo, ya probado por los tests anteriores
+        contra driver_simulado(), cuya SesionSimulada no implementa Placement)."""
+        hosts = driver_simulado().descubrir_hosts()
+        self.assertEqual([h.id for h in hosts], ["worker1", "worker2", "worker3"])
 
 
 class TestDespliegueCompleto(unittest.TestCase):
