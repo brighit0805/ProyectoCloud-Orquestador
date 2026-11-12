@@ -6,6 +6,7 @@ Pruebas unitarias del scheduler inteligente (Lab 7).
 Cubre: filtros, pesadores, overcommit, AZ obligatoria, afinidad topologica,
 traza explicable, monitor de recursos, concurrencia y determinismo de la EX1.
 """
+from __future__ import annotations
 
 import sys
 import os
