@@ -87,6 +87,13 @@ class Host:
     zona_disponibilidad: str = "az-default"
     vcpu_usados: int = 0
     ram_usados_mb: int = 0
+    # --- campos del scheduler (Lab 7) ---
+    capacidad_disco_gb: float = 0.0       # 0 = no informado (sin filtro por disco)
+    disco_usado_gb: float = 0.0
+    activo: bool = True                   # False = host en mantenimiento / caído
+    ultima_medicion: float | None = None  # timestamp UNIX de la última lectura del monitor
+    overcommit_vcpu: float = 1.0          # ratio de overcommit (ej: 4.0 = 4:1)
+    overcommit_ram: float = 1.0
 
     @property
     def vcpu_disponibles(self) -> int:
@@ -95,6 +102,28 @@ class Host:
     @property
     def ram_disponible_mb(self) -> int:
         return self.capacidad_ram_mb - self.ram_usados_mb
+
+    @property
+    def vcpu_efectivos(self) -> float:
+        """vCPU totales teniendo en cuenta el overcommit."""
+        return self.capacidad_vcpu * self.overcommit_vcpu
+
+    @property
+    def ram_efectiva_mb(self) -> float:
+        """RAM total teniendo en cuenta el overcommit."""
+        return self.capacidad_ram_mb * self.overcommit_ram
+
+    @property
+    def vcpu_disponibles_con_overcommit(self) -> float:
+        return self.vcpu_efectivos - self.vcpu_usados
+
+    @property
+    def ram_disponible_con_overcommit_mb(self) -> float:
+        return self.ram_efectiva_mb - self.ram_usados_mb
+
+    @property
+    def disco_disponible_gb(self) -> float:
+        return self.capacidad_disco_gb - self.disco_usado_gb
 
 
 @dataclass
