@@ -44,12 +44,13 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from .models import Host
+from .models import CATALOGO_FLAVORS, Host
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,7 @@ class ConfigOpenStack:
     puerto_keystone: int = 55000
     puerto_nova: int = 58774
     puerto_neutron: int = 59696
+    puerto_glance: int = 9292
     dominio_id: str = ""
     proyecto_admin_id: str = ""
     usuario_admin_id: str = ""
@@ -94,6 +96,10 @@ class ConfigOpenStack:
     def neutron(self) -> str:
         return f"http://{self.acceso_ip}:{self.puerto_neutron}/v2.0"
 
+    @property
+    def glance(self) -> str:
+        return f"http://{self.acceso_ip}:{self.puerto_glance}/v2"
+
     @classmethod
     def desde_entorno(cls, env: dict | None = None) -> "ConfigOpenStack":
         e = os.environ if env is None else env
@@ -102,6 +108,7 @@ class ConfigOpenStack:
             puerto_keystone=int(e.get("KEYSTONE_PORT", 55000)),
             puerto_nova=int(e.get("NOVA_PORT", 58774)),
             puerto_neutron=int(e.get("NEUTRON_PORT", 59696)),
+            puerto_glance=int(e.get("GLANCE_PORT", 9292)),
             dominio_id=e.get("DOMAIN_ID", ""),
             proyecto_admin_id=e.get("ADMIN_PROJECT_ID", ""),
             usuario_admin_id=e.get("ADMIN_USER_ID", ""),
@@ -128,6 +135,18 @@ def parsear_ubicacion(host_uri: str) -> tuple[str, str | None]:
     resto = host_uri[len(PREFIJO_UBICACION):] if host_uri.startswith(PREFIJO_UBICACION) else host_uri
     zona, _, host = resto.partition(":")
     return zona, (host or None)
+
+
+def _normalizar_nombre_imagen(nombre: str) -> str:
+    """'cirros-0.6.2.qcow2' -> 'cirros'; 'ubuntu-22.04.qcow2' -> 'ubuntu'.
+
+    Quita la extensión del archivo y se queda con las letras iniciales, para
+    poder emparejar el nombre de archivo del catálogo (`models.Flavor.imagen`)
+    con el nombre, normalmente más corto, con el que un administrador subió la
+    imagen a Glance (ej. solo 'cirros' en vez de 'cirros-0.6.2.qcow2')."""
+    base = nombre.rsplit(".", 1)[0]
+    m = re.match(r"[a-zA-Z]+", base)
+    return (m.group(0) if m else base).lower()
 
 
 # ----------------------------------------------------------------------- driver
@@ -373,14 +392,89 @@ class DriverOpenStack:
         self._registrar("liberar_imagen", host_uri, imagen)
         return False
 
+    def sincronizar_catalogo_imagenes(self, forzar: bool = False) -> dict[str, str]:
+        """Resuelve automáticamente `imagen_por_nombre` consultando Glance, para
+        que el usuario final no tenga que conocer de antemano los IDs: por cada
+        imagen del catálogo (``models.CATALOGO_FLAVORS``) busca en Glance una
+        imagen cuyo nombre coincida (normalizado, sin extensión ni versión; ej.
+        'cirros-0.6.2.qcow2' empareja con la imagen de Glance llamada 'cirros').
+
+        Un mapeo puesto a mano en `imagen_por_nombre` al construir el driver NO
+        se pisa (tiene prioridad): esto solo RELLENA lo que falte. Si ninguna
+        imagen del catálogo encuentra pareja, usa la primera imagen disponible
+        de Glance como `imagen_id_defecto`, para no bloquear la demo.
+        """
+        if self.imagen_por_nombre and not forzar:
+            return self.imagen_por_nombre
+        r = self._api("admin", "GET", self.config.glance + "/images")
+        disponibles = {img["name"]: img["id"] for img in r.json().get("images", [])}
+        disponibles_norm = {_normalizar_nombre_imagen(n): id_ for n, id_ in disponibles.items()}
+        for flavor in CATALOGO_FLAVORS.values():
+            clave = _normalizar_nombre_imagen(flavor.imagen)
+            if clave in disponibles_norm:
+                self.imagen_por_nombre[flavor.imagen] = disponibles_norm[clave]
+        if self.imagen_id_defecto is None and disponibles:
+            self.imagen_id_defecto = next(iter(disponibles.values()))
+        logger.info("[OPENSTACK] catálogo de imágenes sincronizado desde Glance: %s "
+                    "(defecto=%s)", self.imagen_por_nombre, self.imagen_id_defecto)
+        return self.imagen_por_nombre
+
     def _resolver_imagen(self, imagen: str) -> str:
-        id_ = self.imagen_por_nombre.get(imagen) or self.imagen_id_defecto
+        id_ = self.imagen_por_nombre.get(imagen)
+        if not id_ and self.modo == ModoOpenStack.REAL:
+            # Nadie configuró un mapeo manual: lo intentamos resolver solos
+            # contra Glance antes de rendirnos (automatización end-to-end).
+            self.sincronizar_catalogo_imagenes()
+            id_ = self.imagen_por_nombre.get(imagen)
+        id_ = id_ or self.imagen_id_defecto
         if not id_:
             raise DriverOpenStackError(f"No hay id de Glance para la imagen '{imagen}'")
         return id_
 
+    def sincronizar_catalogo_flavors(self, forzar: bool = False) -> dict[tuple[int, int, float], str]:
+        """Resuelve automáticamente `flavor_por_perfil` consultando Nova, para
+        que el usuario final no tenga que conocer de antemano los IDs de
+        flavor: por cada flavor del catálogo (``models.CATALOGO_FLAVORS``)
+        busca en Nova uno con las mismas vCPU y RAM, y al menos el disco
+        pedido (Nova no deja usar un flavor con menos disco del que la imagen
+        necesita).
+
+        Un mapeo puesto a mano en `flavor_por_perfil` al construir el driver
+        NO se pisa (tiene prioridad): esto solo RELLENA lo que falte. Si
+        ningún flavor del catálogo encuentra pareja, usa el primer flavor
+        disponible de Nova como `flavor_id_defecto`, para no bloquear la demo.
+        """
+        if self.flavor_por_perfil and not forzar:
+            return self.flavor_por_perfil
+        r = self._api("admin", "GET", self.config.nova + "/flavors/detail")
+        disponibles = r.json().get("flavors", [])
+        for flavor in CATALOGO_FLAVORS.values():
+            clave = (flavor.vcpu, flavor.ram_mb, flavor.disco_gb)
+            if clave in self.flavor_por_perfil:
+                continue
+            candidato = next(
+                (f for f in disponibles
+                 if f["vcpus"] == flavor.vcpu and f["ram"] == flavor.ram_mb
+                 and f["disk"] >= flavor.disco_gb),
+                None,
+            )
+            if candidato:
+                self.flavor_por_perfil[clave] = candidato["id"]
+        if self.flavor_id_defecto is None and disponibles:
+            self.flavor_id_defecto = disponibles[0]["id"]
+        logger.info("[OPENSTACK] catálogo de flavors sincronizado desde Nova: %s "
+                    "(defecto=%s)", self.flavor_por_perfil, self.flavor_id_defecto)
+        return self.flavor_por_perfil
+
     def _resolver_flavor(self, vcpu: int, ram_mb: int, disco_gb: float) -> str:
-        id_ = self.flavor_por_perfil.get((vcpu, ram_mb, disco_gb)) or self.flavor_id_defecto
+        clave = (vcpu, ram_mb, disco_gb)
+        id_ = self.flavor_por_perfil.get(clave)
+        if not id_ and self.modo == ModoOpenStack.REAL:
+            # Nadie configuró un mapeo manual: lo intentamos resolver solos
+            # contra Nova antes de rendirnos (automatización end-to-end).
+            self.sincronizar_catalogo_flavors()
+            id_ = self.flavor_por_perfil.get(clave)
+        id_ = id_ or self.flavor_id_defecto
         if not id_:
             raise DriverOpenStackError(
                 f"No hay flavor de Nova para {vcpu} vCPU / {ram_mb} MB / {disco_gb} GB")
@@ -544,6 +638,12 @@ class SesionSimulada:
         self.roles: set[tuple[str, str, str]] = set()
         self.fallos_http: dict[tuple[str, str], list[int]] = {}   # (método, fragmento de ruta) -> códigos a devolver
         self.redes["net-external"] = {"id": "net-external", "name": "external", "project_id": "admin"}
+        self.imagenes: dict[str, dict] = {
+            "img-cirros": {"id": "img-cirros", "name": "cirros"},
+        }
+        self.flavores: list[dict] = [
+            {"id": "flv-512", "name": "512MBRAM_1VCPUs_4GBRoot", "vcpus": 1, "ram": 512, "disk": 4},
+        ]
         self.hipervisores = [
             {"hypervisor_hostname": f"worker{i}", "vcpus": 4, "memory_mb": 3935,
              "vcpus_used": 0, "memory_mb_used": 0} for i in range(1, workers + 1)]
@@ -621,6 +721,8 @@ class SesionSimulada:
                 del coleccion[iid]
                 return _Resp(204)
         # ---- Nova
+        if ruta == "/v2.1/flavors/detail" and metodo == "GET":
+            return _Resp(200, {"flavors": list(self.flavores)})
         if ruta == "/v2.1/servers" and metodo == "GET":
             return _Resp(200, {"servers": [{"id": s["id"], "name": s["name"]}
                                             for s in filtrar(self.servidores)]})
@@ -650,4 +752,7 @@ class SesionSimulada:
             return _Resp(200, {"availabilityZoneInfo": [{"zoneName": "nova", "hosts": hosts}]})
         if ruta == "/v2.1/os-hypervisors/detail":
             return _Resp(200, {"hypervisors": self.hipervisores})
+        # ---- Glance
+        if ruta == "/v2/images" and metodo == "GET":
+            return _Resp(200, {"images": list(self.imagenes.values())})
         return _Resp(404, {"error": f"ruta no simulada: {metodo} {ruta}"})

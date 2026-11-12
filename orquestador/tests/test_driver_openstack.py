@@ -13,6 +13,7 @@ from slice_orchestrator.driver_openstack import (
     ConfigOpenStack,
     DriverOpenStack,
     DriverOpenStackError,
+    ModoOpenStack,
     SesionSimulada,
     parsear_ubicacion,
     ubicacion,
@@ -229,6 +230,71 @@ class TestReintentosYRollback(unittest.TestCase):
         self.assertEqual(len(sim.proyectos), 0)
         for h in hosts:
             self.assertEqual((h.vcpu_usados, h.ram_usados_mb), (0, 0))
+
+
+class TestSincronizarCatalogoFlavors(unittest.TestCase):
+    """Resolución automática de flavor_por_perfil contra Nova (el usuario
+    final no necesita conocer el ID del flavor de antemano), simétrica a
+    sincronizar_catalogo_imagenes."""
+
+    def driver_sin_mapeo(self, flavores_nova=None):
+        cfg = ConfigOpenStack(dominio_id="dom", proyecto_admin_id="adm",
+                              usuario_admin_id="u-admin", password_admin="x",
+                              rol_admin_id="rol-admin")
+        d = DriverOpenStack(config=cfg, imagen_id_defecto="img-cirros")
+        d.sesion = SesionSimulada(cfg)
+        if flavores_nova is not None:
+            d.sesion.flavores = flavores_nova
+        return d
+
+    def test_empareja_por_vcpu_ram_y_disco_suficiente(self):
+        d = self.driver_sin_mapeo([
+            {"id": "flv-1", "name": "m1.tiny", "vcpus": 1, "ram": 512, "disk": 4},
+        ])
+        mapeo = d.sincronizar_catalogo_flavors()
+        # ubuntu y cirros piden ambos 1 vCPU / 512 MB en el catálogo
+        self.assertEqual(mapeo[(1, 512, 2.2)], "flv-1")
+        self.assertEqual(mapeo[(1, 512, 1.0)], "flv-1")
+
+    def test_disco_insuficiente_no_empareja(self):
+        d = self.driver_sin_mapeo([
+            {"id": "flv-chico", "name": "m1.nano", "vcpus": 1, "ram": 512, "disk": 1},
+        ])
+        mapeo = d.sincronizar_catalogo_flavors()
+        # el flavor de Nova tiene 1 GB de disco; ubuntu pide 2.2 GB: no encaja
+        self.assertNotIn((1, 512, 2.2), mapeo)
+        # cirros pide 1.0 GB: sí encaja (disco de Nova >= pedido)
+        self.assertEqual(mapeo[(1, 512, 1.0)], "flv-chico")
+
+    def test_sin_coincidencias_usa_el_primero_como_defecto(self):
+        d = self.driver_sin_mapeo([
+            {"id": "flv-raro", "name": "otro", "vcpus": 8, "ram": 16384, "disk": 80},
+        ])
+        d.sincronizar_catalogo_flavors()
+        self.assertEqual(d.flavor_id_defecto, "flv-raro")
+
+    def test_no_pisa_un_mapeo_manual_ya_puesto(self):
+        d = self.driver_sin_mapeo([
+            {"id": "flv-nuevo", "name": "m1.tiny", "vcpus": 1, "ram": 512, "disk": 4},
+        ])
+        d.flavor_por_perfil[(1, 512, 2.2)] = "id-manual"
+        d.sincronizar_catalogo_flavors()
+        self.assertEqual(d.flavor_por_perfil[(1, 512, 2.2)], "id-manual")
+
+    def test_en_modo_simulado_no_sincroniza_sola(self):
+        """Comportamiento previo intacto: en SIMULADO no se auto-sincroniza."""
+        d = self.driver_sin_mapeo([
+            {"id": "flv-1", "name": "m1.tiny", "vcpus": 1, "ram": 512, "disk": 4},
+        ])
+        with self.assertRaises(DriverOpenStackError):
+            d._resolver_flavor(1, 512, 2.2)
+
+    def test_modo_real_resuelve_sola_sin_mapeo(self):
+        d = self.driver_sin_mapeo([
+            {"id": "flv-1", "name": "m1.tiny", "vcpus": 1, "ram": 512, "disk": 4},
+        ])
+        d.modo = ModoOpenStack.REAL
+        self.assertEqual(d._resolver_flavor(1, 512, 2.2), "flv-1")
 
 
 if __name__ == "__main__":
