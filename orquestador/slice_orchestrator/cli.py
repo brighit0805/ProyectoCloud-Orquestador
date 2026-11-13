@@ -19,7 +19,16 @@ Uso (desde la carpeta ``orquestador``):
 
 El estado se guarda en ``estado_r1b.json`` (o en ``--estado``/``ORQ_ESTADO``), de
 modo que varias invocaciones y varios usuarios comparten la misma "infraestructura".
-El backend es el driver Linux en modo SIMULADO: no toca ningún clúster.
+
+El backend se elige con ``--driver`` (o la variable ``ORQ_DRIVER``):
+    - ``linux`` (por defecto): driver Linux en modo SIMULADO, no toca ningún clúster.
+    - ``openstack``: driver OpenStack en modo REAL contra el clúster del curso;
+      requiere las variables de entorno de ``. .env.real`` ya cargadas en la
+      sesión de shell (ver ``driver_openstack.ConfigOpenStack.desde_entorno``).
+      Descubre el inventario real de hosts vía Placement antes de operar.
+Esto cierra, para R1B, el criterio de rúbrica "ser independiente de la capa de
+infraestructura (cluster Linux, OpenStack, AWS, etc.)": la misma CLI, con el
+mismo conjunto de comandos, puede apuntar a cualquiera de los dos backends.
 """
 
 from __future__ import annotations
@@ -31,6 +40,34 @@ import sys
 from typing import Any
 
 from .servicio_slices import ErrorServicio, ServicioSlices
+
+
+def _construir_servicio_openstack_real(ruta_estado: str) -> ServicioSlices:
+    """Arma un ServicioSlices contra el clúster REAL de OpenStack: lee la config
+    de las variables de entorno (las de '. .env.real'), construye el driver en
+    modo REAL y descubre el inventario real de hosts vía Placement -- en vez
+    del inventario simulado fijo (worker1..3, sin disco) que usa 'linux'. Sin
+    esto, --driver openstack llamaría a la API real pero seguiría calculando
+    la colocación con números inventados."""
+    # import perezoso: driver_openstack solo hace falta en este camino, no en
+    # el camino simulado por defecto.
+    from .driver_openstack import ConfigOpenStack, DriverOpenStack, ModoOpenStack
+
+    cfg = ConfigOpenStack.desde_entorno()
+    faltan = cfg.faltantes()
+    if faltan:
+        raise ErrorServicio(
+            "Faltan variables de entorno para el driver OpenStack real: "
+            f"{', '.join(faltan)}. Cargue primero '. .env.real' en esta sesión "
+            "de shell (o configure ORQ_DRIVER=linux para usar el simulado).")
+    driver = DriverOpenStack(modo=ModoOpenStack.REAL, config=cfg)
+    try:
+        hosts_reales = driver.descubrir_hosts()
+    except Exception as exc:  # cualquier fallo de red/API se traduce a un error de CLI limpio
+        raise ErrorServicio(f"No se pudo descubrir el inventario real del clúster: {exc}") from exc
+    print("⚠ Usando el driver OpenStack REAL -- las operaciones afectan al clúster compartido.",
+          file=sys.stderr)
+    return ServicioSlices(ruta_estado=ruta_estado, hosts=hosts_reales, driver=driver)
 
 ESTADO_POR_DEFECTO = "estado_r1b.json"
 
@@ -253,6 +290,11 @@ def construir_parser() -> argparse.ArgumentParser:
     p.add_argument("--estado", default=os.environ.get("ORQ_ESTADO", ESTADO_POR_DEFECTO),
                    help=f"archivo de estado (por defecto {ESTADO_POR_DEFECTO})")
     p.add_argument("--json", action="store_true", help="salida en JSON")
+    p.add_argument("--driver", choices=["linux", "openstack"],
+                   default=os.environ.get("ORQ_DRIVER", "linux"),
+                   help="'linux' (por defecto): driver SIMULADO, no toca ningún clúster. "
+                        "'openstack': driver REAL -- requiere las variables de entorno de "
+                        ". .env.real (ver driver_openstack.ConfigOpenStack) ya cargadas en la sesión.")
     sub = p.add_subparsers(dest="comando", required=True)
 
     sub.add_parser("topologias", help="catálogo de topologías predefinidas")
@@ -330,7 +372,12 @@ def main(argv: list[str] | None = None, servicio: ServicioSlices | None = None) 
     parser = construir_parser()
     args = parser.parse_args(argv)
     try:
-        svc = servicio if servicio is not None else ServicioSlices(ruta_estado=args.estado)
+        if servicio is not None:
+            svc = servicio
+        elif args.driver == "openstack":
+            svc = _construir_servicio_openstack_real(args.estado)
+        else:
+            svc = ServicioSlices(ruta_estado=args.estado)
         necesita_usuario = (args.comando in ("slice", "recursos")
                             or (args.comando == "imagen" and args.sub == "importar")
                             or (args.comando == "consola" and args.sub == "emitir"))

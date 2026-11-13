@@ -11,6 +11,8 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 
+from unittest.mock import patch
+
 from slice_orchestrator import cli, composicion, vm_placement
 from slice_orchestrator.models import EstadoSlice, TipoTopologia
 from slice_orchestrator.servicio_slices import (
@@ -614,6 +616,58 @@ class TestCLI(unittest.TestCase):
         self.assertIn("activo", out)
         resultado = vm_placement.obtener_ultimo_resultado()
         self.assertIsNotNone(resultado)   # confirma que de verdad pasó por el Scheduler
+
+    def test_driver_openstack_sin_variables_de_entorno_da_error_claro(self):
+        """Hallazgo del 12-nov (rúbrica oficial EX2, R1B: 'ser independiente de
+        la capa de infraestructura'): antes de este cambio, la CLI siempre
+        usaba el driver Linux simulado, sin forma de pedirle el driver
+        OpenStack real. Esta prueba confirma que '--driver openstack' ya es
+        aceptado por la CLI, y que si faltan las variables de entorno de
+        '. .env.real' el error es claro, sin traza, y NUNCA intenta tocar la
+        red (no se cuelga ni expone nada)."""
+        claves = ("DOMAIN_ID", "ADMIN_PROJECT_ID", "ADMIN_USER_ID",
+                  "ADMIN_USER_PASSWORD", "ADMIN_ROLE_ID")
+        respaldo = {k: os.environ.pop(k, None) for k in claves}
+        try:
+            salida, errores = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(salida), contextlib.redirect_stderr(errores):
+                codigo = cli.main(["--estado", self.ruta, "-u", "ana", "--driver", "openstack",
+                                  "slice", "listar"])
+        finally:
+            for k, v in respaldo.items():
+                if v is not None:
+                    os.environ[k] = v
+        self.assertEqual(codigo, 1)
+        self.assertIn("variables de entorno", errores.getvalue())
+        self.assertNotIn("Traceback", errores.getvalue())
+
+    def test_cli_openstack_arma_el_servicio_con_el_driver_y_el_inventario_reales(self):
+        """Confirma que, con las variables de entorno presentes, '--driver
+        openstack' de verdad conecta el ServicioSlices con un DriverOpenStack
+        en modo REAL y con el inventario que devuelve driver.descubrir_hosts()
+        -- no con el inventario simulado fijo que usa 'linux'. No toca la red:
+        se simula la respuesta de descubrir_hosts() con un mock."""
+        from slice_orchestrator.driver_openstack import DriverOpenStack, ModoOpenStack
+        from slice_orchestrator.models import Host
+
+        hosts_falsos = [Host("worker9", "worker9", "openstack://az-real:worker9", 4, 3935,
+                             "az-real", capacidad_disco_gb=9.0)]
+        entorno = {"DOMAIN_ID": "d", "ADMIN_PROJECT_ID": "p", "ADMIN_USER_ID": "u",
+                  "ADMIN_USER_PASSWORD": "x", "ADMIN_ROLE_ID": "r"}
+        respaldo = {k: os.environ.get(k) for k in entorno}
+        os.environ.update(entorno)
+        try:
+            with patch.object(DriverOpenStack, "descubrir_hosts", return_value=hosts_falsos):
+                svc = cli._construir_servicio_openstack_real(self.ruta)
+        finally:
+            for k, v in respaldo.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertIsInstance(svc._driver, DriverOpenStack)
+        self.assertEqual(svc._driver.modo, ModoOpenStack.REAL)
+        self.assertEqual(svc._hosts_base, hosts_falsos)
 
 
 if __name__ == "__main__":
