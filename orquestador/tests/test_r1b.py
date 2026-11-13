@@ -218,6 +218,35 @@ class TestServicio(unittest.TestCase):
         self.assertIn("zona de disponibilidad es obligatoria", str(ctx.exception))
         self.assertEqual(svc.ver_slice("ana", d["id"])["estado"], "borrador")  # no quedó en error
 
+    def test_limpiar_residuos_no_soportado_por_el_driver_simulado(self):
+        """El driver Linux simulado no tiene limpiar_residuos() (solo tiene
+        sentido contra un clúster OpenStack real, que puede acumular residuos
+        entre sesiones -- ver hallazgo del 12-nov en estado-proyecto): el
+        servicio debe rechazarlo con un mensaje claro, no reventar con
+        AttributeError."""
+        with self.assertRaises(ErrorServicio) as ctx:
+            self.svc.limpiar_residuos()
+        self.assertIn("OpenStack real", str(ctx.exception))
+
+    def test_limpiar_residuos_delega_en_el_driver(self):
+        """Duck-typing, igual que preparar_slice/descubrir_hosts (ver
+        _DriverRealFalso arriba): si el driver activo sí ofrece
+        limpiar_residuos(), el servicio solo delega y devuelve exactamente
+        lo que el driver reporta, pasando 'confirmar' tal cual."""
+        llamadas = []
+
+        class _DriverConLimpieza:
+            def limpiar_residuos(self, confirmar=False):
+                llamadas.append(confirmar)
+                return {"proyectos": [{"id": "p1", "name": "orq_viejo"}], "redes": [], "flavors": []}
+
+        svc = ServicioSlices(driver=_DriverConLimpieza())
+        r = svc.limpiar_residuos()
+        self.assertEqual(llamadas, [False])
+        self.assertEqual(r["proyectos"][0]["name"], "orq_viejo")
+        svc.limpiar_residuos(confirmar=True)
+        self.assertEqual(llamadas, [False, True])
+
     def test_topologias_predefinidas_malla_arbol_y_bus(self):
         m = self.svc.crear_slice("ana", spec_simple("m", "malla", 4), desplegar=True)
         self.assertEqual((m["tipo"], len(m["enlaces"])), ("malla", 6))
@@ -726,6 +755,50 @@ class TestCLI(unittest.TestCase):
         self.assertIsInstance(svc._driver, DriverOpenStack)
         self.assertEqual(svc._driver.modo, ModoOpenStack.REAL)
         self.assertEqual(svc._hosts_base, hosts_falsos)
+
+    def test_cli_mantenimiento_rechazado_con_el_driver_linux(self):
+        """El driver linux (simulado, el que usa la CLI por defecto) no tiene
+        limpiar_residuos: la CLI debe fallar con un mensaje claro y código 1,
+        no con una traza. 'mantenimiento' no exige --usuario (no es una
+        operación de un usuario sobre sus propios slices)."""
+        c, _, err = self.correr("mantenimiento", "limpiar-residuos", usuario=None)
+        self.assertEqual(c, 1)
+        self.assertIn("OpenStack real", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_cli_mantenimiento_limpiar_residuos_con_driver_openstack(self):
+        """Extremo a extremo (DriverOpenStack mockeado, sin tocar la red):
+        '--driver openstack mantenimiento limpiar-residuos --confirmar' pasa
+        confirmar=True hasta el driver y muestra el reporte que devuelve."""
+        from slice_orchestrator.driver_openstack import DriverOpenStack
+        from slice_orchestrator.models import Host
+
+        hosts_falsos = [Host("worker9", "worker9", "openstack://az-real:worker9", 4, 3935, "az-real")]
+        reporte_falso = {"proyectos": [{"id": "p1", "name": "orq_viejo"}],
+                         "redes": [{"id": "r1", "name": "br-viejo-0-vlan10"}],
+                         "flavors": []}
+        entorno = {"DOMAIN_ID": "d", "ADMIN_PROJECT_ID": "p", "ADMIN_USER_ID": "u",
+                  "ADMIN_USER_PASSWORD": "x", "ADMIN_ROLE_ID": "r"}
+        respaldo = {k: os.environ.get(k) for k in entorno}
+        os.environ.update(entorno)
+        try:
+            with patch.object(DriverOpenStack, "descubrir_hosts", return_value=hosts_falsos), \
+                 patch.object(DriverOpenStack, "limpiar_residuos", return_value=reporte_falso) as m:
+                salida, errores = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(salida), contextlib.redirect_stderr(errores):
+                    codigo = cli.main(["--estado", self.ruta, "--driver", "openstack",
+                                       "mantenimiento", "limpiar-residuos", "--confirmar"])
+        finally:
+            for k, v in respaldo.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertEqual(codigo, 0)
+        m.assert_called_once_with(confirmar=True)
+        self.assertIn("orq_viejo", salida.getvalue())
+        self.assertIn("br-viejo-0-vlan10", salida.getvalue())
+        self.assertIn("BORRADOS", salida.getvalue())
 
 
 if __name__ == "__main__":

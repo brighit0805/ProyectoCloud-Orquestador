@@ -501,5 +501,104 @@ class TestSincronizarCatalogoFlavors(unittest.TestCase):
         self.assertEqual(len(d.sesion.flavores), 1)
 
 
+class TestLimpiarResiduos(unittest.TestCase):
+    """mantenimiento limpiar-residuos (ver estado-proyecto, §9quater, hallazgo
+    del 12-nov-2026): detecta y opcionalmente borra proyectos/redes/flavors
+    huérfanos, usando los mismos criterios validados a mano contra el
+    clúster real ese día."""
+
+    def _inyectar_residuos(self, d):
+        """Pone a mano, directo en la SesionSimulada, el mismo patrón de
+        residuo encontrado en el clúster real: un proyecto 'orq_*' sin
+        servidores, una red 'br-*' con un puerto cuyo device_id ya no
+        apunta a ninguna instancia (el 'openstack server delete' manual
+        que no pasa por eliminar_vm/eliminar_red), y un flavor 'auto_*'
+        que ninguna instancia usa."""
+        s = d.sesion
+        s.proyectos["p-huerfano"] = {"id": "p-huerfano", "name": "orq_slice-viejo"}
+        s.redes["r-huerfana"] = {"id": "r-huerfana", "name": "br-slice-viejo-0-vlan10",
+                                  "project_id": "p-huerfano"}
+        s.subredes["sub-huerfana"] = {"id": "sub-huerfana", "name": "br-slice-viejo-0-vlan10_subnet",
+                                       "network_id": "r-huerfana", "project_id": "p-huerfano"}
+        s.puertos["pt-huerfano"] = {"id": "pt-huerfano", "name": "demo-vm1:br-slice-viejo-0-vlan10",
+                                     "network_id": "r-huerfana", "project_id": "p-huerfano",
+                                     "device_id": None}
+        s.flavores.append({"id": "flv-huerfano", "name": "auto_1vcpu_512mb_1gb",
+                            "vcpus": 1, "ram": 512, "disk": 1})
+
+    def test_detecta_proyecto_red_y_flavor_huerfanos_sin_tocar_nada(self):
+        d = driver_simulado()
+        self._inyectar_residuos(d)
+
+        reporte = d.listar_residuos()
+
+        self.assertEqual([p["id"] for p in reporte["proyectos"]], ["p-huerfano"])
+        self.assertEqual([r["id"] for r in reporte["redes"]], ["r-huerfana"])
+        self.assertEqual(reporte["redes"][0]["puertos"], ["pt-huerfano"])
+        self.assertEqual([f["id"] for f in reporte["flavors"]], ["flv-huerfano"])
+
+        # Nunca reporta infraestructura ajena al orquestador (ver prefijos).
+        self.assertNotIn("external", {r["name"] for r in reporte["redes"]})
+        self.assertNotIn("512MBRAM_1VCPUs_4GBRoot", {f["name"] for f in reporte["flavors"]})
+
+        # Es de solo lectura: nada cambia en la sesión.
+        s = d.sesion
+        self.assertIn("p-huerfano", s.proyectos)
+        self.assertIn("r-huerfana", s.redes)
+        self.assertEqual(len(s.flavores), 2)
+
+    def test_no_reporta_recursos_que_siguen_en_uso(self):
+        d = driver_simulado()
+        slc = anillo3()
+        desplegar(slc, d)
+
+        reporte = d.listar_residuos()
+
+        self.assertEqual(reporte, {"proyectos": [], "redes": [], "flavors": []})
+
+    def test_sin_confirmar_es_un_dry_run(self):
+        d = driver_simulado()
+        self._inyectar_residuos(d)
+
+        reporte = d.limpiar_residuos(confirmar=False)
+
+        self.assertEqual(len(reporte["proyectos"]), 1)
+        self.assertEqual(len(reporte["redes"]), 1)
+        self.assertEqual(len(reporte["flavors"]), 1)
+        s = d.sesion
+        self.assertIn("p-huerfano", s.proyectos)
+        self.assertIn("r-huerfana", s.redes)
+        self.assertEqual(len(s.flavores), 2)
+
+    def test_confirmado_borra_todo_en_el_orden_seguro(self):
+        d = driver_simulado()
+        self._inyectar_residuos(d)
+
+        reporte = d.limpiar_residuos(confirmar=True)
+        self.assertEqual(len(reporte["proyectos"]), 1)
+
+        s = d.sesion
+        self.assertNotIn("p-huerfano", s.proyectos)
+        self.assertNotIn("r-huerfana", s.redes)
+        self.assertNotIn("sub-huerfana", s.subredes)
+        self.assertNotIn("pt-huerfano", s.puertos)
+        self.assertEqual([f["name"] for f in s.flavores], ["512MBRAM_1VCPUs_4GBRoot"])
+
+        # Idempotente: una segunda pasada ya no encuentra nada.
+        self.assertEqual(d.listar_residuos(), {"proyectos": [], "redes": [], "flavors": []})
+
+    def test_no_toca_infraestructura_ajena_al_orquestador(self):
+        d = driver_simulado()
+        # 'external' y '512MBRAM_1VCPUs_4GBRoot' ya existen de fábrica en
+        # SesionSimulada.__init__ y no empiezan con los prefijos del
+        # orquestador: no deben aparecer nunca, ni siquiera con confirmar=True.
+        reporte = d.limpiar_residuos(confirmar=True)
+
+        self.assertEqual(reporte, {"proyectos": [], "redes": [], "flavors": []})
+        s = d.sesion
+        self.assertIn("net-external", s.redes)
+        self.assertEqual([f["name"] for f in s.flavores], ["512MBRAM_1VCPUs_4GBRoot"])
+
+
 if __name__ == "__main__":
     unittest.main()

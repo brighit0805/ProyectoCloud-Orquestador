@@ -275,6 +275,22 @@ def _cmd_imagen(svc: ServicioSlices, a: argparse.Namespace) -> None:
                       "Recuerde: la copia al repositorio de imágenes del servidor no la hace esta interfaz.")
 
 
+def _cmd_mantenimiento(svc: ServicioSlices, a: argparse.Namespace) -> None:
+    if a.sub == "limpiar-residuos":
+        r = svc.limpiar_residuos(confirmar=a.confirmar)
+        texto = []
+        for etiqueta, clave in (("Proyectos", "proyectos"), ("Redes", "redes"), ("Flavors", "flavors")):
+            items = r[clave]
+            if not items:
+                texto.append(f"{etiqueta}: ninguno.")
+                continue
+            texto.append(f"{etiqueta} ({len(items)}):")
+            texto.append(_tabla([[i["name"], i["id"]] for i in items], ["nombre", "id"]))
+        encabezado = ("Residuos BORRADOS:" if a.confirmar else
+                      "Residuos detectados (dry-run; use --confirmar para borrarlos):")
+        _salida(a, r, encabezado + "\n\n" + "\n".join(texto))
+
+
 def _cmd_consola(svc: ServicioSlices, a: argparse.Namespace) -> None:
     if a.sub == "emitir":
         t = svc.emitir_token_consola(a.usuario, a.id, a.nodo)
@@ -372,6 +388,13 @@ def construir_parser() -> argparse.ArgumentParser:
     x.add_argument("nodo")
     x = k.add_parser("canjear", help="valida y consume un token (lo haría el proxy de consola)")
     x.add_argument("token")
+
+    m = sub.add_parser("mantenimiento", help="tareas de mantenimiento del clúster "
+                        "(solo --driver openstack)").add_subparsers(dest="sub", required=True)
+    x = m.add_parser("limpiar-residuos", help="detecta (y, con --confirmar, borra) "
+                      "proyectos/redes/flavors huérfanos dejados por sesiones anteriores")
+    x.add_argument("--confirmar", action="store_true",
+                    help="borra de verdad los residuos detectados (sin esto, solo informa: dry-run)")
     return p
 
 
@@ -391,7 +414,8 @@ def main(argv: list[str] | None = None, servicio: ServicioSlices | None = None) 
         if necesita_usuario and not args.usuario:
             raise ErrorServicio("Indique el usuario con --usuario o la variable ORQ_USUARIO")
         {"topologias": _cmd_topologias, "flavors": _cmd_flavors, "slice": _cmd_slice,
-         "recursos": _cmd_recursos, "imagen": _cmd_imagen, "consola": _cmd_consola}[args.comando](svc, args)
+         "recursos": _cmd_recursos, "imagen": _cmd_imagen, "consola": _cmd_consola,
+         "mantenimiento": _cmd_mantenimiento}[args.comando](svc, args)
         return 0
     except ErrorServicio as exc:
         print(f"Error: {exc}", file=sys.stderr)

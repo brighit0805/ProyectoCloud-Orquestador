@@ -691,6 +691,23 @@ class ServicioSlices:
             return {"host": n.host_id, "puerto": PUERTO_VNC_BASE + posicion, "token": token,
                     "expira_en": TTL_TOKEN_CONSOLA_S, "simulado": True}
 
+    def limpiar_residuos(self, confirmar: bool = False) -> dict[str, Any]:
+        """Delega en el driver activo la detección (y, si ``confirmar=True``, el
+        borrado) de recursos huérfanos del clúster (proyectos/redes/flavors que
+        ya no usa ningún slice -- ver hallazgo del 12-nov-2026 en estado-proyecto).
+
+        Es duck-typed (como ``preparar_slice``/``descubrir_hosts``/etc.): solo
+        tiene sentido contra el driver OpenStack real (Lab 7), que es el único
+        que habla con un clúster que puede acumular residuos entre sesiones; el
+        driver Linux simulado no lo implementa."""
+        if not hasattr(self._driver, "limpiar_residuos"):
+            raise ErrorServicio(
+                "La limpieza de residuos solo está disponible con el driver "
+                "OpenStack real (--driver openstack); el driver activo no la "
+                "soporta.")
+        with self._lock:
+            return self._driver.limpiar_residuos(confirmar=confirmar)
+
     def canjear_token_consola(self, token: str) -> dict[str, Any]:
         """Valida y CONSUME un token. Lo usaría el proxy de consola; aquí sirve para
         demostrar que es de un solo uso y que caduca."""

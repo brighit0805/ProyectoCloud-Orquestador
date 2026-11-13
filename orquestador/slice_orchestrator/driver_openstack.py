@@ -57,6 +57,18 @@ logger = logging.getLogger(__name__)
 
 PREFIJO_UBICACION = "openstack://"
 
+# Prefijos que identifican, por convención del propio driver (ver
+# preparar_slice/crear_red/_resolver_o_crear_flavor_exacto), un recurso
+# creado POR el orquestador -- y por lo tanto candidato a "residuo huérfano"
+# si ya no lo usa ningún slice. Validado a mano contra el clúster real el
+# 12-nov-2026 (ver estado-proyecto, §9quater): cualquier recurso que NO
+# empiece con estos prefijos (ej. 'link1'/'link2'/'link3'/'external',
+# 'topo1_lab6', '512MBRAM_1VCPUs_4GBRoot') es infraestructura ajena al
+# orquestador y 'mantenimiento limpiar-residuos' nunca debe tocarlo.
+PREFIJO_PROYECTO_ORQUESTADOR = "orq_"
+PREFIJO_RED_ORQUESTADOR = "br-"
+PREFIJO_FLAVOR_AUTOMATICO = "auto_"
+
 
 class ModoOpenStack(str, Enum):
     SIMULADO = "simulado"
@@ -772,6 +784,93 @@ class DriverOpenStack:
                 disco_usado_gb=disco_usado_gb))
         return hosts
 
+    # ------------------------------------------------------- limpieza de residuos
+    def listar_residuos(self) -> dict[str, list[dict]]:
+        """Detecta (SIN borrar nada) recursos huérfanos dejados por sesiones
+        anteriores -- típicamente de un 'slice eliminar' que falló a mitad de
+        camino, o de un borrado manual con 'openstack server delete' que no
+        pasó por este driver (ver estado-proyecto, §9quater, hallazgo del
+        12-nov-2026). Usa exactamente los criterios validados a mano contra
+        el clúster real ese día:
+
+          - proyectos 'orq_<slice_id>' (Keystone) sin NINGUNA instancia
+            activa (en cualquier proyecto -- ``all_tenants``).
+          - redes 'br-*' (Neutron) cuyos puertos no apuntan (``device_id``) a
+            ninguna instancia que exista hoy -- señal de que quedaron
+            "colgando" tras un borrado que no pasó por ``eliminar_vm``/
+            ``eliminar_red``.
+          - flavors 'auto_*' (Nova, creados por
+            ``_resolver_o_crear_flavor_exacto``) que ninguna instancia actual
+            referencia.
+
+        Nunca toca ni reporta un recurso que no calce con estos prefijos
+        (infraestructura ajena al orquestador: redes 'link1/2/3/external',
+        proyectos de otros labs, flavors creados a mano)."""
+        c = self.config
+        proyectos = self._api("admin", "GET", c.keystone + "/projects").json().get("projects", [])
+        servidores = self._api("admin", "GET", c.nova + "/servers/detail",
+                                params={"all_tenants": True}).json().get("servers", [])
+        ids_servidores_activos = {s["id"] for s in servidores}
+        proyectos_con_servidor = {s["project_id"] for s in servidores if s.get("project_id")}
+
+        reporte: dict[str, list[dict]] = {"proyectos": [], "redes": [], "flavors": []}
+
+        for p in proyectos:
+            nombre = p.get("name", "")
+            if nombre.startswith(PREFIJO_PROYECTO_ORQUESTADOR) and p["id"] not in proyectos_con_servidor:
+                reporte["proyectos"].append({"id": p["id"], "name": nombre})
+
+        redes = self._api("admin", "GET", c.neutron + "/networks").json().get("networks", [])
+        puertos = self._api("admin", "GET", c.neutron + "/ports").json().get("ports", [])
+        for red in redes:
+            nombre = red.get("name", "")
+            if not nombre.startswith(PREFIJO_RED_ORQUESTADOR):
+                continue
+            puertos_de_red = [pt for pt in puertos if pt.get("network_id") == red["id"]]
+            en_uso = any(pt.get("device_id") in ids_servidores_activos for pt in puertos_de_red)
+            if not en_uso:
+                reporte["redes"].append({"id": red["id"], "name": nombre,
+                                          "puertos": [pt["id"] for pt in puertos_de_red]})
+
+        flavors_en_uso: set[str] = set()
+        for s in servidores:
+            flv = s.get("flavor")
+            fid = flv.get("id") if isinstance(flv, dict) else (flv or s.get("flavorRef"))
+            if fid:
+                flavors_en_uso.add(fid)
+        for f in self._listar_flavors():
+            nombre = f.get("name", "")
+            if nombre.startswith(PREFIJO_FLAVOR_AUTOMATICO) and f["id"] not in flavors_en_uso:
+                reporte["flavors"].append({"id": f["id"], "name": nombre})
+
+        return reporte
+
+    def limpiar_residuos(self, confirmar: bool = False) -> dict[str, list[dict]]:
+        """``listar_residuos()`` y, si ``confirmar=True``, además BORRA cada
+        recurso huérfano detectado, en el orden seguro -- puertos, luego
+        subredes, luego redes, luego flavors y por último proyectos (un
+        proyecto no se puede borrar si todavía tiene recursos propios, igual
+        que en ``liberar_slice``). Con ``confirmar=False`` (por defecto) es un
+        dry-run: informa lo que borraría sin tocar el clúster."""
+        reporte = self.listar_residuos()
+        if not confirmar:
+            return reporte
+        c = self.config
+        for red in reporte["redes"]:
+            for puerto_id in red.get("puertos", []):
+                self._api("admin", "DELETE", f"{c.neutron}/ports/{puerto_id}", esperado=(204,), tolerar=(404,))
+            subredes = self._api("admin", "GET", c.neutron + "/subnets",
+                                  params={"network_id": red["id"]}).json().get("subnets", [])
+            for sub in subredes:
+                self._api("admin", "DELETE", f"{c.neutron}/subnets/{sub['id']}", esperado=(204,), tolerar=(404,))
+            self._api("admin", "DELETE", f"{c.neutron}/networks/{red['id']}", esperado=(204,), tolerar=(404,))
+        for flavor in reporte["flavors"]:
+            self._api("admin", "DELETE", f"{c.nova}/flavors/{flavor['id']}", esperado=(204,), tolerar=(404,))
+        for proyecto in reporte["proyectos"]:
+            self._api("admin", "DELETE", f"{c.keystone}/projects/{proyecto['id']}",
+                      esperado=(204,), tolerar=(404,))
+        return reporte
+
 
 # ------------------------------------------------------- OpenStack en memoria
 class _Resp:
@@ -839,6 +938,8 @@ class SesionSimulada:
                     res = [x for x in res if x["name"] == nombre]
             if params.get("project_id"):
                 res = [x for x in res if x["project_id"] == params["project_id"]]
+            if params.get("network_id"):
+                res = [x for x in res if x.get("network_id") == params["network_id"]]
             return res
 
         # ---- Keystone
@@ -892,9 +993,16 @@ class SesionSimulada:
             item["id"] = self._id("flv")
             self.flavores.append(item)
             return _Resp(201, {"flavor": item})
+        if ruta.startswith("/v2.1/flavors/") and metodo == "DELETE":
+            fid = ruta.rsplit("/", 1)[1]
+            antes = len(self.flavores)
+            self.flavores = [f for f in self.flavores if f["id"] != fid]
+            return _Resp(204) if len(self.flavores) < antes else _Resp(404)
         if ruta == "/v2.1/servers" and metodo == "GET":
             return _Resp(200, {"servers": [{"id": s["id"], "name": s["name"]}
                                             for s in filtrar(self.servidores)]})
+        if ruta == "/v2.1/servers/detail" and metodo == "GET":
+            return _Resp(200, {"servers": filtrar(self.servidores)})
         if ruta == "/v2.1/servers" and metodo == "POST":
             s = dict(json["server"])
             s["id"] = self._id("srv")
