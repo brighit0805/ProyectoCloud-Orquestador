@@ -29,6 +29,11 @@ El backend se elige con ``--driver`` (o la variable ``ORQ_DRIVER``):
 Esto cierra, para R1B, el criterio de rúbrica "ser independiente de la capa de
 infraestructura (cluster Linux, OpenStack, AWS, etc.)": la misma CLI, con el
 mismo conjunto de comandos, puede apuntar a cualquiera de los dos backends.
+
+La CLI no expone una opción para elegir la estrategia de colocación (balanceado/
+round_robin/objetivo): confirmado con German el 12-nov, esa decisión es del
+sistema, no del usuario. Por dentro, ``ServicioSlices`` siempre usa 'objetivo'
+(el Scheduler: filtros + pesadores + función objetivo, Lab 7) por defecto.
 """
 
 from __future__ import annotations
@@ -200,7 +205,7 @@ def _spec_desde_argumentos(a: argparse.Namespace) -> dict[str, Any]:
 def _cmd_slice(svc: ServicioSlices, a: argparse.Namespace) -> None:
     u = a.usuario
     if a.sub == "crear":
-        d = svc.crear_slice(u, _spec_desde_argumentos(a), desplegar=a.desplegar, estrategia=a.estrategia)
+        d = svc.crear_slice(u, _spec_desde_argumentos(a), desplegar=a.desplegar)
         _salida(a, d, _mostrar_slice(d))
     elif a.sub == "listar":
         datos = svc.listar_slices(u)
@@ -212,7 +217,7 @@ def _cmd_slice(svc: ServicioSlices, a: argparse.Namespace) -> None:
         d = svc.ver_slice(u, a.id)
         _salida(a, d, _mostrar_slice(d))
     elif a.sub == "desplegar":
-        d = svc.desplegar_slice(u, a.id, a.estrategia)
+        d = svc.desplegar_slice(u, a.id)
         _salida(a, d, _mostrar_slice(d))
     elif a.sub == "eliminar":
         d = svc.eliminar_slice(u, a.id)
@@ -230,6 +235,8 @@ def _cmd_slice(svc: ServicioSlices, a: argparse.Namespace) -> None:
         ops += [{"op": "agregar_enlace", "a": x, "b": y} for x, y in a.agregar_enlace]
         ops += [{"op": "quitar_enlace", "a": x, "b": y} for x, y in a.quitar_enlace]
         ops += [{"op": "capacidad", "nodo": k, **v} for k, v in a.capacidad]
+        if a.zona is not None:
+            ops.append({"op": "zona", "zona": a.zona})
         d = svc.editar_slice(u, a.id, ops)
         _salida(a, d, _mostrar_slice(d))
     elif a.sub == "exportar":
@@ -318,19 +325,16 @@ def construir_parser() -> argparse.ArgumentParser:
     c.add_argument("--enlace-quitado", action="append", default=[], type=_par, metavar="A,B")
     c.add_argument("--zona")
     c.add_argument("--desplegar", action="store_true")
-    c.add_argument("--estrategia", default="balanceado",
-                   choices=["balanceado", "round_robin", "objetivo"],
-                   help="'objetivo' usa el Scheduler inteligente (filtros + pesadores + "
-                        "función objetivo, Lab 7); 'balanceado'/'round_robin' no revisan disco")
+    # Hallazgo del 12-nov (confirmado con German): la estrategia de colocación
+    # NO la elige el usuario -- "su solución debería decidirlo". Por eso ya no
+    # hay un --estrategia aquí: el sistema siempre usa el Scheduler inteligente
+    # (filtros + pesadores + función objetivo, Lab 7) por dentro.
 
     s.add_parser("listar", help="sus slices")
     for nombre, ayuda in (("ver", "detalle de un slice"), ("eliminar", "borrar un slice"),
                           ("desplegar", "desplegar un BORRADOR")):
         x = s.add_parser(nombre, help=ayuda)
         x.add_argument("id")
-        if nombre == "desplegar":
-            x.add_argument("--estrategia", default="balanceado",
-                           choices=["balanceado", "round_robin", "objetivo"])
 
     e = s.add_parser("editar", help="componer y editar un slice en BORRADOR (todo o nada)")
     e.add_argument("id")
@@ -342,6 +346,9 @@ def construir_parser() -> argparse.ArgumentParser:
                    metavar="SOBRE:TIPO:N")
     e.add_argument("--agregar-enlace", action="append", default=[], type=_par, metavar="A,B")
     e.add_argument("--quitar-enlace", action="append", default=[], type=_par, metavar="A,B")
+    e.add_argument("--zona", default=None,
+                   help="fija/cambia la zona de disponibilidad del slice (obligatoria para "
+                        "desplegar con --driver openstack)")
     e.add_argument("--capacidad", action="append", default=[], type=_capacidad,
                    metavar="vmN=vcpu:2,ram:1024,disco:8")
 

@@ -156,17 +156,67 @@ class TestServicio(unittest.TestCase):
         self.assertEqual({n["clave"] for n in d["nodos"] if n["acceso_internet"]}, {"vm1", "vm3"})
         self.assertEqual(len({e["vlan"] for e in d["enlaces"]}), 6)
 
-    def test_estrategia_objetivo_usa_el_scheduler_desde_el_servicio(self):
+    def test_el_sistema_usa_el_scheduler_por_defecto_sin_que_el_usuario_elija(self):
         """Hallazgo del 12-nov: el Scheduler (filtros+pesadores+función
         objetivo, Lab 7) ya existía pero estaba inalcanzable desde el flujo
-        real de usuario -- solo se probaba con un script aparte. Esta prueba
-        confirma que, a través de ServicioSlices (el mismo camino que usa la
-        CLI), 'objetivo' ya funciona de extremo a extremo."""
-        d = self.svc.crear_slice("ana", spec_ex1("obj"), desplegar=True, estrategia="objetivo")
+        real de usuario -- solo se probaba con un script aparte.
+
+        Hallazgo del mismo día, en una segunda vuelta (confirmado con
+        German por WhatsApp: "su solución debería decidirlo"): la elección
+        de ESTRATEGIA no debe ser del usuario, sino del sistema. Por eso
+        ServicioSlices ya no recibe --estrategia desde la CLI y usa
+        'objetivo' (el Scheduler) por defecto siempre que no se indique lo
+        contrario explícitamente (los otros valores quedan solo para uso
+        interno/pruebas). Esta prueba confirma que, sin pasar ninguna
+        estrategia, el camino por defecto ya pasa por el Scheduler."""
+        d = self.svc.crear_slice("ana", spec_ex1("obj"), desplegar=True)
         self.assertEqual(d["estado"], "activo")
         resultado = vm_placement.obtener_ultimo_resultado()
         self.assertIsNotNone(resultado)       # confirma que SI paso por el Scheduler
         self.assertTrue(all(n["host"] for n in d["nodos"]))
+
+    def test_editar_zona_permite_desplegar_despues(self):
+        """Quien olvidó --zona al crear el slice no queda bloqueado: puede
+        fijarla luego con 'editar --zona' antes de desplegar."""
+        d = self.svc.crear_slice("ana", spec_simple("tardio", "anillo", 3))
+        d = self.svc.editar_slice("ana", d["id"], [{"op": "zona", "zona": "az-lab"}])
+        self.assertEqual(d["zona"], "az-lab")
+        d = self.svc.desplegar_slice("ana", d["id"])
+        self.assertEqual(d["estado"], "activo")
+
+    def test_editar_zona_invalida_se_rechaza(self):
+        d = self.svc.crear_slice("ana", spec_simple("x", "anillo", 3))
+        with self.assertRaises(ErrorServicio):
+            self.svc.editar_slice("ana", d["id"], [{"op": "zona", "zona": "marte"}])
+
+    def test_desplegar_sin_zona_sigue_funcionando_con_el_driver_simulado(self):
+        """No regresión, y ajuste tras ocultar --estrategia: con el driver
+        Linux SIMULADO (el de uso normal/pruebas), desplegar sin zona sigue
+        funcionando igual que antes -- aunque por dentro siempre se use
+        'objetivo', la zona solo se vuelve obligatoria contra el driver
+        OpenStack REAL (ver test_driver_real_sin_zona_se_rechaza)."""
+        for estrategia in (None, "balanceado", "round_robin", "objetivo"):
+            nombre = "ok-" + (estrategia or "default").replace("_", "-")
+            kwargs = {} if estrategia is None else {"estrategia": estrategia}
+            d = self.svc.crear_slice("ana", spec_simple(nombre, "anillo", 3),
+                                     desplegar=True, **kwargs)
+            self.assertEqual(d["estado"], "activo")
+
+    def test_driver_real_sin_zona_se_rechaza(self):
+        """Con el driver OpenStack real, la zona sí es obligatoria -- es la
+        única condición que la dispara ahora que la estrategia ya no la
+        elige el usuario (ver servicio_slices.desplegar_slice)."""
+        from slice_orchestrator.driver_openstack import ModoOpenStack
+
+        class _DriverRealFalso:
+            modo = ModoOpenStack.REAL
+
+        svc = ServicioSlices(driver=_DriverRealFalso())
+        d = svc.crear_slice("ana", spec_simple("real-sin-zona", "anillo", 3))
+        with self.assertRaises(ErrorServicio) as ctx:
+            svc.desplegar_slice("ana", d["id"])
+        self.assertIn("zona de disponibilidad es obligatoria", str(ctx.exception))
+        self.assertEqual(svc.ver_slice("ana", d["id"])["estado"], "borrador")  # no quedó en error
 
     def test_topologias_predefinidas_malla_arbol_y_bus(self):
         m = self.svc.crear_slice("ana", spec_simple("m", "malla", 4), desplegar=True)
@@ -553,11 +603,9 @@ class TestCLI(unittest.TestCase):
         c, out, _ = self.correr("slice", "crear", "--nombre", "ex1", "--tipo", "anillo", "--nodos", "4",
                                 "--rama", "vm4:lineal:2", "--flavor", "vm2=cirros", "--flavor", "vm6=cirros",
                                 "--internet", "vm1", "--internet", "vm3", "--zona", "az-lab",
-                                "--capacidad", "vm3=vcpu:2,ram:1024,disco:8", "--desplegar",
-                                "--estrategia", "round_robin")
+                                "--capacidad", "vm3=vcpu:2,ram:1024,disco:8", "--desplegar")
         self.assertEqual(c, 0)
         self.assertIn("activo", out)
-        self.assertIn("worker3", out)
         c, out, _ = self.correr("slice", "listar")
         self.assertIn("ex1", out)
         c, out, _ = self.correr("slice", "listar", usuario="bob")
@@ -599,23 +647,33 @@ class TestCLI(unittest.TestCase):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 self.correr(*args)
 
-    def test_estrategia_objetivo_es_aceptada_por_la_cli_real(self):
-        """Hallazgo del 12-nov: antes de este cambio, argparse rechazaba
-        '--estrategia objetivo' en la CLI real (solo 'balanceado'/'round_robin'
-        estaban en choices=), aunque el Scheduler ya funcionaba por dentro.
+    def test_la_cli_ya_no_deja_elegir_estrategia_y_usa_el_scheduler_siempre(self):
+        """Hallazgo del 12-nov, en dos partes:
+        1) Antes de la primera parte de este cambio, argparse rechazaba
+           '--estrategia objetivo' en la CLI real, aunque el Scheduler ya
+           funcionaba por dentro.
+        2) Confirmado el mismo día con German por WhatsApp ("su solución
+           debería decidirlo"): la elección de estrategia no debe ser del
+           usuario. Por eso '--estrategia' se eliminó de la CLI por
+           completo -- ya ni siquiera se puede pasar -- y el sistema usa
+           'objetivo' (el Scheduler) siempre, sin pedirlo.
+
         Esta prueba usa cli.main(...) tal cual la usaría una persona en la
-        terminal -- no ServicioSlices directamente -- para confirmar que el
-        camino completo CLI -> servicio -> orquestador -> Scheduler quedó
-        realmente cableado de punta a punta."""
+        terminal -- no ServicioSlices directamente -- para confirmar que
+        (a) '--estrategia' ya no es un argumento válido, y (b) el camino
+        normal CLI -> servicio -> orquestador -> Scheduler igual queda
+        cableado de punta a punta sin que nadie lo pida explícitamente."""
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.correr("slice", "crear", "--nombre", "rechazado", "--tipo", "anillo", "--nodos", "3",
+                       "--estrategia", "objetivo")
         c, out, err = self.correr("slice", "crear", "--nombre", "ex1obj", "--tipo", "anillo", "--nodos", "4",
                                   "--rama", "vm4:lineal:2", "--flavor", "vm2=cirros", "--flavor", "vm6=cirros",
                                   "--internet", "vm1", "--internet", "vm3", "--zona", "az-lab",
-                                  "--capacidad", "vm3=vcpu:2,ram:1024,disco:8", "--desplegar",
-                                  "--estrategia", "objetivo")
+                                  "--capacidad", "vm3=vcpu:2,ram:1024,disco:8", "--desplegar")
         self.assertEqual(c, 0, err)
         self.assertIn("activo", out)
         resultado = vm_placement.obtener_ultimo_resultado()
-        self.assertIsNotNone(resultado)   # confirma que de verdad pasó por el Scheduler
+        self.assertIsNotNone(resultado)   # confirma que de verdad pasó por el Scheduler, sin pedirlo
 
     def test_driver_openstack_sin_variables_de_entorno_da_error_claro(self):
         """Hallazgo del 12-nov (rúbrica oficial EX2, R1B: 'ser independiente de

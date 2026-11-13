@@ -337,7 +337,7 @@ class ServicioSlices:
         composicion.aplicar_capacidad(composicion.resolver(slc, clave), **valores)
 
     def crear_slice(self, usuario: str, spec: dict, desplegar: bool = False,
-                    estrategia: str = "balanceado") -> dict[str, Any]:
+                    estrategia: str = "objetivo") -> dict[str, Any]:
         """Crea un slice BORRADOR (sin reservar recursos) y, si se pide, lo despliega."""
         usuario = self._usuario(usuario)
         with self._lock:
@@ -436,6 +436,15 @@ class ServicioSlices:
             if not isinstance(op.get("nodo"), str) or not isinstance(op.get("valor"), bool):
                 raise ErrorServicio("acceso_internet necesita 'nodo' y 'valor' (verdadero/falso)")
             composicion.resolver(slc, op["nodo"]).acceso_internet = op["valor"]
+        elif nombre == "zona":
+            # Permite fijar/cambiar la zona de disponibilidad de un slice en
+            # borrador después de creado -- necesario porque, desde el fix del
+            # 12-nov, desplegar con 'objetivo' o el driver real exige una zona,
+            # y sin esto quien olvidó --zona al crear quedaría sin forma de
+            # arreglarlo salvo borrar y recrear el slice.
+            zona = op.get("zona")
+            self._validar_zona(zona)
+            slc.zona_disponibilidad = zona
         else:
             raise ErrorServicio(f"Operación desconocida: '{nombre}'")
 
@@ -443,7 +452,7 @@ class ServicioSlices:
     # Área B: ciclo de vida
     # ------------------------------------------------------------------
     def desplegar_slice(self, usuario: str, slice_id: str,
-                        estrategia: str = "balanceado") -> dict[str, Any]:
+                        estrategia: str = "objetivo") -> dict[str, Any]:
         usuario = self._usuario(usuario)
         with self._lock:
             slc = self._propio(usuario, slice_id)
@@ -454,6 +463,27 @@ class ServicioSlices:
             except ValueError:
                 raise ErrorServicio(
                     "Estrategia inválida: use 'balanceado', 'round_robin' u 'objetivo'") from None
+            # Hallazgo del 12-nov (confirmado con German): la elección de
+            # estrategia de colocación NO debe quedar en manos del usuario --
+            # "su solución debería decidirlo". Por eso la CLI ya no expone
+            # --estrategia (ver cli.py); el valor por defecto de este método
+            # pasó de 'balanceado' a 'objetivo' para que el sistema SIEMPRE use
+            # el Scheduler inteligente (filtros + pesadores + función objetivo,
+            # Lab 7) salvo que algo interno (pruebas) pida otra cosa a propósito.
+            #
+            # La zona de disponibilidad obligatoria (informe previo Lab 7) ya
+            # NO se amarra a la estrategia -- con 'objetivo' siempre activo por
+            # defecto, eso la volvería obligatoria para TODO despliegue, incluso
+            # los simulados de uso normal/pruebas, lo cual no es lo que pedía el
+            # informe. Se amarra solo a si el driver activo es el real: ahí sí
+            # hace falta una garantía real de aislamiento/ubicación.
+            es_driver_real = getattr(self._driver, "modo", None) == "real"
+            if es_driver_real and slc.zona_disponibilidad is None:
+                raise ErrorServicio(
+                    "La zona de disponibilidad es obligatoria para desplegar contra "
+                    "el driver OpenStack real (Lab 7). Indíquela al crear el slice "
+                    "(--zona en 'slice crear') o edítelo con 'slice editar --zona "
+                    "<zona>' antes de desplegar.")
             problemas = composicion.validar(slc)
             if problemas:
                 raise ErrorServicio("El diseño no es desplegable: " + "; ".join(problemas))
