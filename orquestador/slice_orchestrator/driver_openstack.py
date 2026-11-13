@@ -825,6 +825,17 @@ class DriverOpenStack:
                 if "DISK_GB" in placement:
                     capacidad_disco_gb, disco_usado_gb = placement["DISK_GB"]
 
+            # Hallazgo 13-nov-2026 (estado-proyecto Sec9octies): Placement no
+            # cuenta el overhead real de imagenes/qcow2 en el filesystem del
+            # compute node. Usamos el minimo entre lo que informa Placement y
+            # el disk_available_least real de Nova, para que nuestra decision
+            # SIEMPRE coincida con lo que Nova aceptaria.
+            disco_disponible_least = h.get("disk_available_least")
+            if disco_disponible_least is not None and capacidad_disco_gb > 0:
+                disponible_placement = capacidad_disco_gb - disco_usado_gb
+                disponible_real = min(disponible_placement, float(disco_disponible_least))
+                disco_usado_gb = capacidad_disco_gb - disponible_real
+
             hosts.append(Host(
                 id=nombre, nombre=nombre, uri_libvirt=ubicacion(zona, nombre),
                 capacidad_vcpu=int(capacidad_vcpu), capacidad_ram_mb=int(capacidad_ram_mb),
@@ -835,7 +846,7 @@ class DriverOpenStack:
         return hosts
 
     # ------------------------------------------------------- limpieza de residuos
-    def listar_residuos(self) -> dict[str, list[dict]]:
+    def listar_residuos(self, ids_protegidos: set[str] | None = None) -> dict[str, list[dict]]:
         """Detecta (SIN borrar nada) recursos huérfanos dejados por sesiones
         anteriores -- típicamente de un 'slice eliminar' que falló a mitad de
         camino, o de un borrado manual con 'openstack server delete' que no
@@ -862,12 +873,15 @@ class DriverOpenStack:
                                 params={"all_tenants": True}).json().get("servers", [])
         ids_servidores_activos = {s["id"] for s in servidores}
         proyectos_con_servidor = {s["project_id"] for s in servidores if s.get("project_id")}
+        nombres_protegidos = {f"{PREFIJO_PROYECTO_ORQUESTADOR}{sid}" for sid in (ids_protegidos or set())}
 
         reporte: dict[str, list[dict]] = {"proyectos": [], "redes": [], "flavors": []}
 
         for p in proyectos:
             nombre = p.get("name", "")
-            if nombre.startswith(PREFIJO_PROYECTO_ORQUESTADOR) and p["id"] not in proyectos_con_servidor:
+            if (nombre.startswith(PREFIJO_PROYECTO_ORQUESTADOR)
+                    and p["id"] not in proyectos_con_servidor
+                    and nombre not in nombres_protegidos):
                 reporte["proyectos"].append({"id": p["id"], "name": nombre})
 
         redes = self._api("admin", "GET", c.neutron + "/networks").json().get("networks", [])
@@ -895,14 +909,19 @@ class DriverOpenStack:
 
         return reporte
 
-    def limpiar_residuos(self, confirmar: bool = False) -> dict[str, list[dict]]:
+    def limpiar_residuos(self, confirmar: bool = False,
+                         ids_protegidos: set[str] | None = None) -> dict[str, list[dict]]:
         """``listar_residuos()`` y, si ``confirmar=True``, además BORRA cada
         recurso huérfano detectado, en el orden seguro -- puertos, luego
         subredes, luego redes, luego flavors y por último proyectos (un
         proyecto no se puede borrar si todavía tiene recursos propios, igual
         que en ``liberar_slice``). Con ``confirmar=False`` (por defecto) es un
-        dry-run: informa lo que borraría sin tocar el clúster."""
-        reporte = self.listar_residuos()
+        dry-run: informa lo que borraría sin tocar el clúster.
+
+        ``ids_protegidos``: ver ``listar_residuos`` -- slice_ids que el
+        orquestador todavía tiene registrados localmente y que por lo tanto
+        nunca se consideran huérfanos, pase lo que pase con Nova."""
+        reporte = self.listar_residuos(ids_protegidos=ids_protegidos)
         if not confirmar:
             return reporte
         c = self.config

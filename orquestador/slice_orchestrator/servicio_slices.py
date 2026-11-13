@@ -378,7 +378,25 @@ class ServicioSlices:
             self._guardar()
             logger.info("[%s] creó %s (%s, %d nodos)", usuario, slice_id, nombre, len(slc.nodos))
             if desplegar:
-                return self.desplegar_slice(usuario, slice_id, estrategia)
+                try:
+                    return self.desplegar_slice(usuario, slice_id, estrategia)
+                except ErrorServicio:
+                    # Hallazgo 13-nov-2026 (ver estado-proyecto §9novies): antes,
+                    # si "crear --desplegar" fallaba al desplegar, el slice
+                    # quedaba registrado en estado ERROR y su NOMBRE bloqueado
+                    # para un reintento inmediato -- había que hacer "eliminar
+                    # <id>" a mano antes de poder reintentar con el mismo
+                    # nombre. Mala experiencia, sobre todo en una demo en vivo.
+                    # "crear --desplegar" es, desde la perspectiva del usuario,
+                    # una operación atómica: si el despliegue falla, no debe
+                    # quedar ningún rastro y el nombre queda libre de inmediato.
+                    # (Un "slice desplegar <id>" hecho aparte sobre un BORRADOR
+                    # ya existente SÍ debe seguir dejando estado ERROR, para
+                    # poder inspeccionarlo o reintentar por id -- ese caso no
+                    # cambia, ver desplegar_slice().)
+                    self._slices.pop(slice_id, None)
+                    self._guardar()
+                    raise
             return self.ver_slice(usuario, slice_id)
 
     def editar_slice(self, usuario: str, slice_id: str, operaciones: list[dict]) -> dict[str, Any]:
@@ -743,7 +761,14 @@ class ServicioSlices:
                 "OpenStack real (--driver openstack); el driver activo no la "
                 "soporta.")
         with self._lock:
-            return self._driver.limpiar_residuos(confirmar=confirmar)
+            # Hallazgo 13-nov-2026 (ver estado-proyecto §9novies): se borro por
+            # error el proyecto real de un slice ACTIVO porque el driver creyo
+            # que no tenia instancias (dependia solo de que Nova devolviera
+            # bien el all_tenants). Pasamos los slice_id que el orquestador
+            # todavia tiene registrados para que el driver nunca los toque,
+            # sin importar lo que reporte Nova.
+            ids_propios = set(self._slices.keys())
+            return self._driver.limpiar_residuos(confirmar=confirmar, ids_protegidos=ids_propios)
 
     def canjear_token_consola(self, token: str) -> dict[str, Any]:
         """Valida y CONSUME un token. Lo usaría el proxy de consola; aquí sirve para

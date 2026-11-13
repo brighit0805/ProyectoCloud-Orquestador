@@ -730,6 +730,30 @@ class TestLimpiarResiduos(unittest.TestCase):
         # Idempotente: una segunda pasada ya no encuentra nada.
         self.assertEqual(d.listar_residuos(), {"proyectos": [], "redes": [], "flavors": []})
 
+    def test_ids_protegidos_nunca_se_reportan_aunque_parezcan_huerfanos(self):
+        """Hallazgo 13-nov-2026 (ver estado-proyecto §9novies): el proyecto
+        real de un slice ACTIVO se borro por error con 'limpiar-residuos'
+        porque el chequeo 'sin ninguna instancia activa' dependia solo de lo
+        que Nova devolviera. ids_protegidos es la segunda capa, independiente
+        de Nova: un slice_id que el orquestador dice que sigue registrado
+        nunca se reporta como huerfano, ni en el listado ni al confirmar el
+        borrado -- aunque, para el driver, se vea exactamente igual a un
+        residuo real (mismo 'orq_slice-viejo' que en
+        test_detecta_proyecto_red_y_flavor_huerfanos_sin_tocar_nada)."""
+        d = driver_simulado()
+        self._inyectar_residuos(d)
+
+        reporte = d.listar_residuos(ids_protegidos={"slice-viejo"})
+        self.assertEqual(reporte["proyectos"], [])
+
+        reporte = d.limpiar_residuos(confirmar=True, ids_protegidos={"slice-viejo"})
+        self.assertEqual(reporte["proyectos"], [])
+        self.assertIn("p-huerfano", d.sesion.proyectos)
+
+        reporte = d.limpiar_residuos(confirmar=True)
+        self.assertEqual([p["id"] for p in reporte["proyectos"]], ["p-huerfano"])
+        self.assertNotIn("p-huerfano", d.sesion.proyectos)
+
     def test_no_toca_infraestructura_ajena_al_orquestador(self):
         d = driver_simulado()
         # 'external' y '512MBRAM_1VCPUs_4GBRoot' ya existen de fábrica en

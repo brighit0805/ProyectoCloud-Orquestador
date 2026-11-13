@@ -232,11 +232,12 @@ class TestServicio(unittest.TestCase):
         """Duck-typing, igual que preparar_slice/descubrir_hosts (ver
         _DriverRealFalso arriba): si el driver activo sí ofrece
         limpiar_residuos(), el servicio solo delega y devuelve exactamente
-        lo que el driver reporta, pasando 'confirmar' tal cual."""
+        lo que el driver reporta, pasando 'confirmar' tal cual (y los
+        slice_id que tiene registrados, ver test siguiente)."""
         llamadas = []
 
         class _DriverConLimpieza:
-            def limpiar_residuos(self, confirmar=False):
+            def limpiar_residuos(self, confirmar=False, ids_protegidos=None):
                 llamadas.append(confirmar)
                 return {"proyectos": [{"id": "p1", "name": "orq_viejo"}], "redes": [], "flavors": []}
 
@@ -246,6 +247,25 @@ class TestServicio(unittest.TestCase):
         self.assertEqual(r["proyectos"][0]["name"], "orq_viejo")
         svc.limpiar_residuos(confirmar=True)
         self.assertEqual(llamadas, [False, True])
+
+    def test_limpiar_residuos_nunca_incluye_un_slice_registrado(self):
+        """Hallazgo 13-nov-2026 (ver estado-proyecto §9novies): se borro por
+        error el proyecto real de un slice ACTIVO porque el driver creyo,
+        solo por lo que reporto Nova, que no tenia instancias. El servicio
+        ahora SIEMPRE pasa al driver los slice_id que el sigue teniendo
+        registrados localmente, para que ese slice nunca se trate como
+        huerfano sin importar lo que diga Nova."""
+        capturado = {}
+
+        class _DriverConLimpieza:
+            def limpiar_residuos(self, confirmar=False, ids_protegidos=None):
+                capturado["ids_protegidos"] = ids_protegidos
+                return {"proyectos": [], "redes": [], "flavors": []}
+
+        svc = ServicioSlices(driver=_DriverConLimpieza())
+        d = svc.crear_slice("ana", spec_simple("protegido", "lineal", 2))
+        svc.limpiar_residuos(confirmar=True)
+        self.assertIn(d["id"], capturado["ids_protegidos"])
 
     def test_topologias_predefinidas_malla_arbol_y_bus(self):
         m = self.svc.crear_slice("ana", spec_simple("m", "malla", 4), desplegar=True)
@@ -833,7 +853,7 @@ class TestCLI(unittest.TestCase):
                 else:
                     os.environ[k] = v
         self.assertEqual(codigo, 0)
-        m.assert_called_once_with(confirmar=True)
+        m.assert_called_once_with(confirmar=True, ids_protegidos=set())
         self.assertIn("orq_viejo", salida.getvalue())
         self.assertIn("br-viejo-0-vlan10", salida.getvalue())
         self.assertIn("BORRADOS", salida.getvalue())

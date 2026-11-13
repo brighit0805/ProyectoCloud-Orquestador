@@ -308,7 +308,24 @@ PERFIL_BALANCEADO: list[Pesador] = [
 PERFIL_AFINIDAD_TOPOLOGICA: list[Pesador] = [
     PesadorBalanceVCPU(peso=0.6),
     PesadorBalanceRAM(peso=0.4),
-    PesadorAfinidadTopologica(peso=1.5),
+    # Hallazgo 13-nov-2026 (estado-proyecto Sec9octies): peso bajado de 1.5 a 0.3
+    # para que la afinidad topologica NUNCA gane sobre el balance de recursos
+    # (0.6+0.4=1.0). Antes apinaba VMs conectadas en un solo host hasta
+    # quedarse sin disco real, y forzabamos ese host a Nova -> NoValidHost.
+    PesadorAfinidadTopologica(peso=0.3),
+    # Segundo hallazgo (mismo dia, probado contra el cluster real): bajar
+    # el peso de afinidad NO basta para un arbol tipo "estrella" (un nodo
+    # central con varias hojas). Cada hoja nueva tiene UN solo vecino (el
+    # nodo central), asi que su bono de afinidad siempre es el maximo
+    # (1.0) hacia el host de ese nodo central -- y como un host recien
+    # usado por 1-2 VMs chicas apenas se distingue de uno vacio en balance
+    # de vCPU/RAM, ese bono sigue bastando para seguir apilando ahi. Se
+    # agrega anti-afinidad (ya existia para PERFIL_DISTRIBUIDO) para que
+    # penalice a un host que ya tiene mas VMs de este slice que el
+    # promedio, contrarrestando el apilamiento en topologias tipo
+    # arbol/estrella sin eliminar del todo la preferencia por cercania
+    # topologica.
+    PesadorAntiAfinidad(peso=0.5),
 ]
 
 PERFIL_DISTRIBUIDO: list[Pesador] = [
