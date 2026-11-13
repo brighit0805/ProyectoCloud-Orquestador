@@ -5,6 +5,7 @@ los reintentos y el rollback. NO prueban el clúster real: eso se valida aparte.
 """
 
 import copy
+import ipaddress
 import unittest
 
 from slice_orchestrator import composicion, direccionamiento
@@ -303,7 +304,43 @@ class TestEdicionEnVivo(unittest.TestCase):
         nuevos_servidores = set(sim.servidores) - servidores_antes
         self.assertEqual(len(nuevos_servidores), 1)
         self.assertEqual(sim.servidores[next(iter(nuevos_servidores))]["name"], n3.nombre)
+        # Hallazgo del 13-nov contra el clúster real: la IP que direccionamiento
+        # le da al puerto (basada en el ÍNDICE del enlace) debe caer DENTRO de
+        # la subred que Neutron realmente creó para esa red (basada en
+        # cidr_por_red, no en la VLAN) -- si no coinciden, el clúster real
+        # rechaza el puerto con "InvalidIpForSubnet" aunque aquí (simulado,
+        # sin esa validación) no se note.
+        enlace_nuevo = nuevo.enlaces[-1]
+        subred_creada = ipaddress.ip_network(d.cidr_por_red[enlace_nuevo.nombre_red])
+        for n in (nuevo.nodos[0], n3):
+            itf = next(i for i in direccionamiento.interfaces_de(nuevo, n)
+                      if i.enlace_id == enlace_nuevo.id)
+            ip_puerto = ipaddress.ip_address(itf.cidr.split("/")[0])
+            self.assertIn(ip_puerto, subred_creada)
         eliminar_slice(resultado, hosts, d, VLANAllocator())
+
+    def test_editar_desde_una_instancia_nueva_del_driver_tambien_funciona(self):
+        """Reproduce el caso real: 'slice crear' y 'slice editar' corren en
+        procesos de CLI distintos, cada uno con su propia instancia de
+        DriverOpenStack -- la que edita nunca llamó a preparar_slice() y por
+        lo tanto no conoce el proyecto_id del slice (vive solo en memoria de
+        la instancia que desplegó). Sin el fix (llamar a preparar_slice()
+        al entrar a editar_slice_desplegado), esto fallaba con 'No hay
+        proyecto activo' -- encontrado contra el clúster real el 13-nov."""
+        d1 = driver_simulado()
+        slc, hosts = desplegar(anillo3(), d1)
+        d2 = driver_simulado()
+        d2.sesion = d1.sesion          # misma "nube" real, instancia de driver distinta
+        self.assertIsNone(d2.proyecto_id)
+        nuevo = copy.deepcopy(slc)
+        n3 = composicion.agregar_nodo(nuevo)
+        composicion.agregar_enlace(nuevo, nuevo.nodos[0].id, n3.id)
+
+        resultado = editar_slice_desplegado(slc, nuevo, hosts, d2, VLANAllocator())
+
+        self.assertEqual(resultado.estado, EstadoSlice.ACTIVO)
+        self.assertEqual(len(d1.sesion.servidores), 4)
+        eliminar_slice(resultado, hosts, d2, VLANAllocator())
 
     def test_quita_nodo_en_vivo_borra_solo_lo_quitado(self):
         d = driver_simulado()

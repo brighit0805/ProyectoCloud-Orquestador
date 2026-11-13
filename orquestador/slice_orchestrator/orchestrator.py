@@ -493,6 +493,23 @@ def editar_slice_desplegado(
             enlace.vlan_id = vlan_id
             enlace.nombre_red = f"br-{slc_nuevo.id}-vivo-vlan{vlan_id}"
             ejecutados.append({"accion": "vlan_vivo", "vlan_id": vlan_id})
+
+        # Hallazgo del 13-nov contra el clúster real: direccionamiento.
+        # interfaces_de() calcula la IP de cada enlace a partir de su ÍNDICE
+        # de posición en slc.enlaces (subred_del_enlace), NO de su VLAN --
+        # pero DriverOpenStack.crear_red() crea la subred real a partir de
+        # cidr_por_red, que solo se llena cuando se llama a preparar_slice().
+        # Si no se vuelve a llamar aquí (ahora que los enlaces nuevos YA
+        # tienen nombre_red), crear_red cae al respaldo basado en VLAN de
+        # _cidr_de(), que da una subred DISTINTA a la que interfaces_de()
+        # usó para calcular la IP del puerto -> Neutron rechaza el puerto
+        # con "InvalidIpForSubnet". Se llama otra vez (idempotente, no
+        # recrea el proyecto) ahora que los enlaces nuevos tienen
+        # nombre_red/vlan_id, para que ambos cálculos queden consistentes.
+        if hasattr(driver, "preparar_slice"):
+            driver.preparar_slice(slc_nuevo)
+
+        for enlace in enlaces_agregados:
             n_origen = nodos_por_id_nuevo[enlace.nodo_origen]
             n_destino = nodos_por_id_nuevo[enlace.nodo_destino]
             host_origen = hosts_por_id[n_origen.host_id]
