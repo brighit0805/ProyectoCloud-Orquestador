@@ -79,8 +79,9 @@ _RE_NOMBRE_IMAGEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.qcow2$")
 _CAMPOS_CAPACIDAD = {"flavor", "vcpu", "ram_mb", "disco_gb", "imagen"}
 
 # Catálogo de topologías que la interfaz ofrece (HLD §3.4). ``disponible`` dice la
-# verdad sobre lo implementado: el bus necesita un segmento compartido que el
-# modelo y los drivers aún no representan.
+# verdad sobre lo implementado: el bus ya está implementado (13-nov) como una
+# cadena de n-1 enlaces (igual forma que lineal) que comparten una sola
+# VLAN/red -- un único dominio de difusión -- en vez de una VLAN por enlace.
 CATALOGO_TOPOLOGIAS: list[dict[str, Any]] = [
     {"tipo": "lineal", "enlaces": "n-1", "minimo_nodos": 2, "restriccion": "n >= 2",
      "disponible": True},
@@ -91,11 +92,19 @@ CATALOGO_TOPOLOGIAS: list[dict[str, Any]] = [
      "disponible": True},
     {"tipo": "arbol", "enlaces": "n-1", "minimo_nodos": 3,
      "restriccion": "n >= 3; requiere el factor de ramificación", "disponible": True},
-    {"tipo": "bus", "enlaces": "n", "minimo_nodos": 2,
-     "restriccion": "un único dominio de broadcast; necesita un segmento compartido",
-     "disponible": False},
+    {"tipo": "bus", "enlaces": "n-1 (comparten una sola VLAN)", "minimo_nodos": 2,
+     "restriccion": "n >= 2; todos los nodos en un único dominio de difusión",
+     "disponible": True},
 ]
 _TIPOS_DISPONIBLES = {t["tipo"] for t in CATALOGO_TOPOLOGIAS if t["disponible"]}
+# El bus solo se soporta como topología BASE (13-nov): es un único segmento
+# compartido a nivel de todo el slice (network_manager.asignar_redes asigna
+# UNA vlan cuando slc.tipo_topologia == BUS). Un injerto, en cambio, deja el
+# slice en MIXTA, donde esa condición nunca se cumple -- "injertar un bus"
+# terminaría creando un enlace punto a punto normal disfrazado de bus, sin
+# el segmento compartido real. Se rechaza explícitamente para no simular
+# algo que no es, hasta que se decida si también hace falta como injerto.
+_TIPOS_INJERTO_DISPONIBLES = _TIPOS_DISPONIBLES - {"bus"}
 
 
 class ErrorServicio(Exception):
@@ -249,9 +258,6 @@ class ServicioSlices:
             tipo_txt, nodos, ramif = base.get("tipo"), base.get("nodos"), base.get("ramificacion", 2)
         else:                                      # forma de HLD §3.7: "base": "anillo", "nodos": 4
             tipo_txt, nodos, ramif = base, top.get("nodos"), top.get("ramificacion", 2)
-        if tipo_txt == "bus":
-            raise ErrorServicio("La topología 'bus' está diseñada pero no implementada: "
-                                "el modelo aún no representa un segmento compartido")
         if tipo_txt not in _TIPOS_DISPONIBLES:
             raise ErrorServicio(f"Topología '{tipo_txt}' no válida. Disponibles: "
                                 f"{', '.join(sorted(_TIPOS_DISPONIBLES))}")
@@ -268,7 +274,9 @@ class ServicioSlices:
                                   "nodos": r.get("nodos"), "ramificacion": r.get("ramificacion", 2)})
         injertos = []
         for j in injertos_json:
-            if not isinstance(j, dict) or j.get("tipo") not in _TIPOS_DISPONIBLES:
+            if not isinstance(j, dict) or j.get("tipo") not in _TIPOS_INJERTO_DISPONIBLES:
+                if isinstance(j, dict) and j.get("tipo") == "bus":
+                    raise ErrorServicio("'bus' solo se soporta como topología base, no como injerto")
                 raise ErrorServicio("Cada injerto necesita 'sobre', 'tipo' (del catálogo) y 'nodos'")
             if not isinstance(j.get("nodos"), int) or not isinstance(j.get("sobre"), str):
                 raise ErrorServicio("Cada injerto necesita 'sobre' (texto) y 'nodos' (entero)")
@@ -421,8 +429,11 @@ class ServicioSlices:
                 raise ErrorServicio("eliminar_nodo necesita 'nodo'")
             composicion.eliminar_nodo(slc, op["nodo"])
         elif nombre == "injertar":
-            if op.get("tipo") not in _TIPOS_DISPONIBLES:
-                raise ErrorServicio(f"Tipo de injerto inválido. Disponibles: {', '.join(sorted(_TIPOS_DISPONIBLES))}")
+            if op.get("tipo") not in _TIPOS_INJERTO_DISPONIBLES:
+                if op.get("tipo") == "bus":
+                    raise ErrorServicio("'bus' solo se soporta como topología base, no como injerto")
+                raise ErrorServicio(f"Tipo de injerto inválido. Disponibles: "
+                                    f"{', '.join(sorted(_TIPOS_INJERTO_DISPONIBLES))}")
             if not isinstance(op.get("sobre"), str) or not isinstance(op.get("nodos"), int):
                 raise ErrorServicio("injertar necesita 'sobre' (texto) y 'nodos' (entero)")
             composicion.injertar(slc, op["sobre"], TipoTopologia(op["tipo"]), op["nodos"],

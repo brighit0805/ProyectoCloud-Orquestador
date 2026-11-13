@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .models import Slice
+from .models import Slice, TipoTopologia
 
 
 @dataclass
@@ -72,6 +72,19 @@ def asignar_redes(slc: Slice, allocator: VLANAllocator) -> dict[str, str]:
     interfaz correcta (Driver Linux).
     """
     redes: dict[str, str] = {}
+
+    if slc.tipo_topologia == TipoTopologia.BUS:
+        # Un único dominio de difusión para todo el slice: UNA sola VLAN,
+        # no una por enlace. Todos los pares de la cadena (ver
+        # topology_manager._figura_a_pares) comparten el mismo nombre_red.
+        vlan_id = allocator.reservar(slc.id, 1)[0]
+        nombre_red = f"br-{slc.id}-bus-vlan{vlan_id}"
+        for enlace in slc.enlaces:
+            enlace.nombre_red = nombre_red
+            enlace.vlan_id = vlan_id
+            redes[enlace.id] = nombre_red
+        return redes
+
     vlans = allocator.reservar(slc.id, len(slc.enlaces))
     for i, (enlace, vlan_id) in enumerate(zip(slc.enlaces, vlans)):
         nombre_red = f"br-{slc.id}-{i}-vlan{vlan_id}"
@@ -96,6 +109,11 @@ def redes_por_nodo(slc: Slice) -> dict[str, list[str]]:
                 "Los enlaces deben tener red asignada antes de calcular "
                 "las interfaces por nodo — llama primero a asignar_redes()."
             )
-        resultado[enlace.nodo_origen].append(enlace.nombre_red)
-        resultado[enlace.nodo_destino].append(enlace.nombre_red)
+        # En un bus, varios pares de la cadena comparten el mismo nombre_red
+        # (ver asignar_redes); sin el chequeo, un nodo intermedio quedaría
+        # con DOS interfaces repetidas sobre la misma red en vez de una sola.
+        if enlace.nombre_red not in resultado[enlace.nodo_origen]:
+            resultado[enlace.nodo_origen].append(enlace.nombre_red)
+        if enlace.nombre_red not in resultado[enlace.nodo_destino]:
+            resultado[enlace.nodo_destino].append(enlace.nombre_red)
     return resultado

@@ -72,6 +72,10 @@ def anillo3():
     return construir_topologia("g2", "anillo", "grupo2@pucp.edu.pe", TipoTopologia.ANILLO, 3)
 
 
+def bus3():
+    return construir_topologia("g3", "bus", "grupo2@pucp.edu.pe", TipoTopologia.BUS, 3)
+
+
 def desplegar(slc, driver, **kw):
     hosts = driver.descubrir_hosts()
     return desplegar_slice_existente(slc, hosts, driver, VLANAllocator(),
@@ -158,6 +162,26 @@ class TestDespliegueCompleto(unittest.TestCase):
         redes_slice = [r for r in sim.redes.values() if r["name"] != "external"]
         self.assertEqual((len(redes_slice), len(sim.subredes)), (3, 3))
         self.assertEqual(len(sim.puertos), 6)            # 3 VMs x 2 enlaces
+
+    def test_bus_se_despliega_con_un_unico_segmento_compartido(self):
+        """Bus (13-nov): a diferencia del anillo (una VLAN por enlace, 2
+        puertos por VM), las 3 VMs deben terminar en UNA sola red/subred
+        compartida, con EXACTAMENTE un puerto cada una -- no uno por cada
+        par de la cadena de enlaces."""
+        d = driver_simulado()
+        slc, _ = desplegar(bus3(), d)
+        sim = d.sesion
+        self.assertEqual(slc.estado, EstadoSlice.ACTIVO)
+        self.assertEqual(len(sim.servidores), 3)
+        redes_slice = [r for r in sim.redes.values() if r["name"] != "external"]
+        self.assertEqual((len(redes_slice), len(sim.subredes)), (1, 1))
+        self.assertEqual(len(sim.puertos), 3)            # 3 VMs x 1 interfaz (bus compartido)
+        # Las 3 VMs deben estar en la MISMA red.
+        redes_de_puertos = {p["network_id"] for p in sim.puertos.values()}
+        self.assertEqual(redes_de_puertos, {redes_slice[0]["id"]})
+        for nodo in slc.nodos:
+            itfs = direccionamiento.interfaces_de(slc, nodo)
+            self.assertEqual(len(itfs), 1)
 
     def test_puertos_usan_mac_e_ip_del_direccionamiento(self):
         d = driver_simulado()

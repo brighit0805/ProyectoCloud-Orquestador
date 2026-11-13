@@ -56,6 +56,27 @@ class PruebasOrquestador(unittest.TestCase):
         self.assertFalse(driver.vms_simuladas)
         self.assertFalse(driver.redes_simuladas)
 
+    def test_bus_usa_una_sola_vlan_con_driver_linux(self):
+        """Bus (13-nov) con DriverLinux: a diferencia de lineal/anillo (una
+        VLAN por enlace), las 3 VMs deben compartir UNA sola VLAN/bridge --
+        validado también con el driver real contra el clúster de PUCP, no
+        solo en simulación (ver estado-proyecto, §9sexies)."""
+        hosts = inventario()
+        driver = DriverLinux()
+        vlans = VLANAllocator(3000, 3010)
+        slc = desplegar_slice(
+            "sb", "bus", "u", TipoTopologia.BUS, 3, hosts, "az-lab",
+            driver=driver, vlan_allocator=vlans,
+        )
+        self.assertEqual(slc.estado, EstadoSlice.ACTIVO)
+        self.assertEqual(len(slc.enlaces), 2)                      # n-1, igual forma que lineal
+        self.assertEqual(len({e.vlan_id for e in slc.enlaces}), 1)  # pero UNA sola VLAN compartida
+        self.assertEqual(len({e.nombre_red for e in slc.enlaces}), 1)
+        eliminar_slice(slc, hosts, driver, vlans)
+        self.assertEqual(slc.estado, EstadoSlice.ELIMINADO)
+        self.assertFalse(driver.vms_simuladas)
+        self.assertFalse(driver.redes_simuladas)
+
     def test_vlans_no_se_repiten_entre_slices(self):
         hosts = inventario()
         driver = DriverLinux()

@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from .models import CATALOGO_FLAVORS, Host
+from .models import CATALOGO_FLAVORS, Host, TipoTopologia
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +327,15 @@ class DriverOpenStack:
                   esperado=(204,))
         for i, e in enumerate(slc.enlaces):
             if e.nombre_red:
-                self.cidr_por_red[e.nombre_red] = str(direccionamiento.subred_del_enlace(i))
+                if slc.tipo_topologia == TipoTopologia.BUS:
+                    # Un bus es un único segmento compartido: todos los
+                    # enlaces de la cadena apuntan a la MISMA red, así que
+                    # usamos la subred única del bus (no una /30 por índice
+                    # de enlace, que cambiaría en cada vuelta del for y
+                    # dejaría el diccionario con un valor arbitrario).
+                    self.cidr_por_red[e.nombre_red] = str(direccionamiento.subred_del_bus(slc.id))
+                else:
+                    self.cidr_por_red[e.nombre_red] = str(direccionamiento.subred_del_enlace(i))
         for n in slc.nodos:
             for itf in direccionamiento.interfaces_de(slc, n):
                 self._ips_puerto[(n.nombre, itf.red)] = itf.cidr.split("/")[0]

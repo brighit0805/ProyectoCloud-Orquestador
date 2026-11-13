@@ -188,7 +188,13 @@ def desplegar_slice_existente(
                     if nodo.id in (enlace.nodo_origen, enlace.nodo_destino):
                         if enlace.nombre_red is None or enlace.vlan_id is None:
                             raise RuntimeError(f"Red incompleta para el enlace {enlace.id}")
-                        redes_vm.append((enlace.nombre_red, enlace.vlan_id))
+                        # En un bus varios enlaces de la cadena comparten la misma
+                        # red (ver network_manager.asignar_redes); sin este chequeo
+                        # un nodo intermedio terminaría con dos NIC duplicadas sobre
+                        # la misma red en vez de la única interfaz que le corresponde.
+                        tupla = (enlace.nombre_red, enlace.vlan_id)
+                        if tupla not in redes_vm:
+                            redes_vm.append(tupla)
                 # Direccionamiento: IP y MAC de cada interfaz, y semilla cloud-init
                 interfaces = direccionamiento.interfaces_de(slc, nodo)
                 acceso_nic, acceso_drv = _interfaz_acceso(slc, nodo, config_acceso)

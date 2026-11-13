@@ -328,7 +328,7 @@ def construir_parser() -> argparse.ArgumentParser:
     c = s.add_parser("crear", help="crear un slice (BORRADOR; con --desplegar también lo despliega)")
     c.add_argument("--spec", help="archivo JSON con la especificación completa")
     c.add_argument("--nombre")
-    c.add_argument("--tipo", help="lineal, anillo, malla o arbol")
+    c.add_argument("--tipo", help="lineal, anillo, malla, arbol o bus")
     c.add_argument("--nodos", type=int)
     c.add_argument("--ramificacion", type=int, default=2, help="hijos por nodo (solo árbol)")
     c.add_argument("--rama", action="append", default=[], type=lambda t: _tres_partes(t, "--rama"),

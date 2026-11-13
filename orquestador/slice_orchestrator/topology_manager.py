@@ -86,6 +86,16 @@ def _figura_a_pares(tipo: TipoTopologia, ids: list[str],
             raise ValueError("El factor de ramificación de un árbol debe ser al menos 2")
         return [(ids[(i - 1) // ramificacion], ids[i]) for i in range(1, len(ids))]
 
+    if tipo == TipoTopologia.BUS:
+        if len(ids) < 2:
+            raise ValueError("Un bus necesita al menos 2 nodos")
+        # Misma forma de cadena que LINEAL: n-1 pares consecutivos. Lo que
+        # distingue al bus de un lineal es que, más adelante, Network
+        # Manager le asigna UNA sola VLAN/red compartida a todos estos
+        # pares (en vez de una VLAN distinta por par), de modo que los n
+        # nodos terminan en un único dominio de difusión.
+        return [(ids[i], ids[i + 1]) for i in range(len(ids) - 1)]
+
     raise ValueError(f"Tipo de topología no soportado como figura: {tipo}")
 
 

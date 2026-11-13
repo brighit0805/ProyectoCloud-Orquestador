@@ -27,10 +27,14 @@ import json
 import zlib
 from dataclasses import dataclass
 
-from .models import Nodo, Slice
+from .models import Nodo, Slice, TipoTopologia
 
 # Plantilla de subred por enlace; {n} es el índice del enlace.
 PLANTILLA_SUBRED = "10.30.{n}.0/30"
+
+# Plantilla de subred para un bus completo (un único segmento compartido
+# para todo el slice, no un /30 por par -- ver subred_del_bus()).
+PLANTILLA_SUBRED_BUS = "10.31.{n}.0/24"
 
 # Usuario y contraseña de las imágenes del laboratorio
 CREDENCIALES = {
@@ -75,9 +79,44 @@ def subred_del_enlace(indice: int) -> ipaddress.IPv4Network:
     return ipaddress.ip_network(PLANTILLA_SUBRED.format(n=indice))
 
 
+def subred_del_bus(slice_id: str) -> ipaddress.IPv4Network:
+    """Subred única (/24) del segmento compartido de un slice BUS.
+
+    Determinística por slice (igual criterio que mac_enlace): dos bus de
+    slices distintos pueden terminar con el mismo octeto, pero eso no es un
+    problema real -- son dos redes Neutron/VLAN aisladas entre sí, no la
+    misma red física, igual que ya ocurre hoy con los /30 de PLANTILLA_SUBRED
+    reutilizados entre slices distintos.
+    """
+    indice = zlib.crc32(f"{slice_id}|bus".encode()) % 256
+    return ipaddress.ip_network(PLANTILLA_SUBRED_BUS.format(n=indice))
+
+
 def interfaces_de(slc: Slice, nodo: Nodo) -> list[InterfazEnlace]:
     """Interfaces de enlace del nodo, en el MISMO orden en que el orquestador
     se las pasa al driver (el de ``slc.enlaces``)."""
+    if slc.tipo_topologia == TipoTopologia.BUS:
+        # Un bus no es punto a punto: cada nodo tiene EXACTAMENTE una
+        # interfaz, sobre el único segmento compartido de todo el slice --
+        # no una por cada par de la cadena de enlaces (ver
+        # topology_manager._figura_a_pares y network_manager.asignar_redes).
+        if not slc.enlaces or slc.enlaces[0].nombre_red is None or slc.enlaces[0].vlan_id is None:
+            raise RuntimeError(f"El bus del slice {slc.id} no tiene red/VLAN asignada")
+        try:
+            posicion = next(i for i, n in enumerate(slc.nodos) if n.id == nodo.id)
+        except StopIteration:
+            raise RuntimeError(f"El nodo {nodo.id} no pertenece al slice {slc.id}") from None
+        red = slc.enlaces[0].nombre_red
+        vlan = slc.enlaces[0].vlan_id
+        sub = subred_del_bus(slc.id)
+        ip = sub[posicion + 1]   # .1, .2, .3... (se evita la .0 de red)
+        enlace_id = f"{slc.id}-bus"
+        return [InterfazEnlace(
+            enlace_id=enlace_id, red=red, vlan=vlan,
+            mac=mac_enlace(slc.id, nodo.id, enlace_id), cidr=f"{ip}/{sub.prefixlen}",
+            vecino="(bus compartido)",
+        )]
+
     salida = []
     for i, e in enumerate(slc.enlaces):
         if nodo.id not in (e.nodo_origen, e.nodo_destino):

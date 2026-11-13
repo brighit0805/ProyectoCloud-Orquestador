@@ -35,6 +35,11 @@ class TipoTopologia(str, Enum):
     ANILLO = "anillo"
     MALLA = "malla"
     ARBOL = "arbol"
+    # Un único segmento de difusión compartido por todos los nodos (no es
+    # punto a punto como las demás): se modela como una cadena de n-1
+    # enlaces (igual que LINEAL) que comparten una sola VLAN/red -- ver
+    # network_manager.asignar_redes() y direccionamiento.interfaces_de().
+    BUS = "bus"
     MIXTA = "mixta"
     # Grafo editado a mano que ya no coincide con ninguna figura del catálogo
     # (R1B, composición de topologías arbitrarias).

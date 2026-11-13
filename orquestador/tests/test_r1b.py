@@ -253,10 +253,30 @@ class TestServicio(unittest.TestCase):
         a = self.svc.crear_slice("ana", {"nombre": "a", "topologia": {
             "base": {"tipo": "arbol", "nodos": 7, "ramificacion": 3}}})
         self.assertEqual((a["tipo"], len(a["enlaces"])), ("arbol", 6))
+        # Bus (13-nov): cadena de n-1 enlaces, todos compartiendo la MISMA
+        # VLAN/red -- un único dominio de difusión, no n-1 enlaces aislados.
+        b = self.svc.crear_slice("ana", spec_simple("b", "bus", 3), desplegar=True)
+        self.assertEqual((b["tipo"], len(b["enlaces"])), ("bus", 2))
+        vlans = {e["vlan"] for e in b["enlaces"]}
+        redes = {e["red"] for e in b["enlaces"]}
+        self.assertEqual((len(vlans), len(redes)), (1, 1))
+        self.assertTrue(next(t for t in self.svc.listar_topologias() if t["tipo"] == "bus")["disponible"])
+
+    def test_bus_no_se_soporta_todavia_como_injerto(self):
+        # Decisión de alcance (13-nov): bus solo como topología base por
+        # ahora -- como injerto el slice queda MIXTA y nunca recibiría la
+        # VLAN única (ver _TIPOS_INJERTO_DISPONIBLES), así que se rechaza
+        # explícitamente en vez de simular un bus que no es real.
         with self.assertRaises(ErrorServicio) as ctx:
-            self.svc.crear_slice("ana", spec_simple("b", "bus", 3))
-        self.assertIn("no implementada", str(ctx.exception))
-        self.assertFalse(next(t for t in self.svc.listar_topologias() if t["tipo"] == "bus")["disponible"])
+            self.svc.crear_slice("ana", {"nombre": "mx", "topologia": {
+                "base": {"tipo": "anillo", "nodos": 3},
+                "injertos": [{"sobre": "vm1", "tipo": "bus", "nodos": 1}]}})
+        self.assertIn("injerto", str(ctx.exception))
+        d = self.svc.crear_slice("ana", spec_simple("e2", "lineal", 3))
+        with self.assertRaises(ErrorServicio) as ctx:
+            self.svc.editar_slice("ana", d["id"], [
+                {"op": "injertar", "tipo": "bus", "sobre": "vm1", "nodos": 1}])
+        self.assertIn("injerto", str(ctx.exception))
 
     def test_capacidad_de_cada_vm_se_respeta_y_se_valida(self):
         spec = spec_simple("cap", "lineal", 2, capacidad={"vm2": {"vcpu": 4, "ram_mb": 2048, "disco_gb": 20}})
@@ -333,7 +353,7 @@ class TestServicio(unittest.TestCase):
             self.svc.editar_slice("ana", d["id"], [{"op": "agregar_nodo"},
                                                    {"op": "agregar_enlace", "a": "vm1", "b": "vm99"}])
         self.assertEqual(self.svc.ver_slice("ana", d["id"]), antes)
-        for op in ({"op": "volar"}, {"x": 1}, "texto", {"op": "injertar", "tipo": "bus", "sobre": "vm1", "nodos": 1}):
+        for op in ({"op": "volar"}, {"x": 1}, "texto", {"op": "injertar", "tipo": "estrella", "sobre": "vm1", "nodos": 1}):
             with self.assertRaises(ErrorServicio):
                 self.svc.editar_slice("ana", d["id"], [op])
         with self.assertRaises(ErrorServicio):
@@ -628,7 +648,7 @@ class TestCLI(unittest.TestCase):
         c, out, _ = self.correr("topologias", usuario=None)
         self.assertEqual(c, 0)
         self.assertIn("malla", out)
-        self.assertIn("no (diseñada)", out)
+        self.assertIn("bus", out)
         c, out, _ = self.correr("slice", "crear", "--nombre", "ex1", "--tipo", "anillo", "--nodos", "4",
                                 "--rama", "vm4:lineal:2", "--flavor", "vm2=cirros", "--flavor", "vm6=cirros",
                                 "--internet", "vm1", "--internet", "vm3", "--zona", "az-lab",
@@ -661,8 +681,8 @@ class TestCLI(unittest.TestCase):
         self.assertIn("usuario", err)
         c, _, err = self.correr("slice", "ver", "slice-123")
         self.assertEqual((c, "no existe" in err), (1, True))
-        c, _, err = self.correr("slice", "crear", "--nombre", "x", "--tipo", "bus", "--nodos", "3")
-        self.assertEqual((c, "bus" in err), (1, True))
+        c, _, err = self.correr("slice", "crear", "--nombre", "x", "--tipo", "estrella", "--nodos", "3")
+        self.assertEqual((c, "estrella" in err), (1, True))
         c, _, err = self.correr("slice", "crear", "--spec", os.path.join(self.tmp.name, "falta.json"))
         self.assertEqual(c, 1)
         c, _, err = self.correr("imagen", "importar", "x.qcow2", "/no/existe")
