@@ -343,11 +343,20 @@ class TestEdicionEnVivo(unittest.TestCase):
         eliminar_slice(resultado, hosts, d2, VLANAllocator())
 
     def test_quita_nodo_en_vivo_borra_solo_lo_quitado(self):
+        """Hallazgo del 13-nov contra el clúster real: al quitar un NODO (no
+        solo un enlace suelto), eliminar_nodo() se lleva también sus
+        enlaces -- pero el nodo que SOBREVIVE en cada uno de esos enlaces
+        tiene su propio puerto en esa misma red, que NO lo limpia el
+        borrado de la VM quitada. Sin desconectarlo primero, Neutron
+        rechaza borrar la subred con 'SubnetInUse' y la red queda huérfana."""
         d = driver_simulado()
         slc, hosts = desplegar(anillo3(), d)
         sim = d.sesion
+        redes_antes = len([r for r in sim.redes.values() if r["name"] != "external"])
         nuevo = copy.deepcopy(slc)
         quitado = nuevo.nodos[-1]
+        redes_del_quitado = {e.nombre_red for e in slc.enlaces
+                             if quitado.id in (e.nodo_origen, e.nodo_destino)}
         composicion.eliminar_nodo(nuevo, quitado.id)
 
         resultado = editar_slice_desplegado(slc, nuevo, hosts, d, VLANAllocator())
@@ -355,6 +364,16 @@ class TestEdicionEnVivo(unittest.TestCase):
         self.assertEqual(resultado.estado, EstadoSlice.ACTIVO)
         self.assertEqual(len(sim.servidores), 2)
         self.assertNotIn(quitado.nombre, {s["name"] for s in sim.servidores.values()})
+        # Las redes de los enlaces del nodo quitado deben haber desaparecido
+        # del todo -- ningún puerto huérfano (ni del nodo que sobrevive)
+        # debe seguir apuntando a ellas.
+        redes_restantes = {r["name"] for r in sim.redes.values()}
+        self.assertTrue(redes_del_quitado.isdisjoint(redes_restantes))
+        self.assertFalse(any(p["network_id"] in
+                             {rid for rid, r in sim.redes.items() if r["name"] in redes_del_quitado}
+                             for p in sim.puertos.values()))
+        self.assertEqual(len([r for r in sim.redes.values() if r["name"] != "external"]),
+                         redes_antes - len(redes_del_quitado))
         eliminar_slice(resultado, hosts, d, VLANAllocator())
 
 

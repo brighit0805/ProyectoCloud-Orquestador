@@ -574,27 +574,33 @@ def editar_slice_desplegado(
         _revertir_edicion(slc_nuevo, hosts_por_id, ejecutados, driver, vlan_allocator)
         raise EdicionEnVivoError(f"Edición del slice '{slc_nuevo.id}' abortada y revertida: {exc}") from exc
 
-    # --- 4) Quitar lo que sobra: enlaces primero, luego nodos completos ---
+    # --- 4) Quitar lo que sobra: primero desconectar los extremos que
+    # SOBREVIVEN de cada enlace quitado, luego borrar las VMs completas, y
+    # recién al final las redes/VLAN -- en ese orden, nunca al revés.
     # (best-effort: un fallo aquí no deshace las altas ya confirmadas arriba)
+    #
+    # Hallazgo del 13-nov contra el clúster real: cuando se quita un NODO
+    # (no solo un enlace suelto), eliminar_nodo() ya se llevó de encima
+    # todos sus enlaces (ver composicion.eliminar_nodo), así que esos
+    # enlaces también caen en 'enlaces_quitados'. El código anterior solo
+    # desconectaba la interfaz cuando AMBOS extremos sobrevivían, asumiendo
+    # que borrar la VM del nodo quitado bastaba -- pero eliminar_vm() solo
+    # limpia los puertos DE ESA VM, no el puerto que el nodo que SOBREVIVE
+    # tiene en esa misma red. Sin desconectarlo primero, Neutron rechaza el
+    # borrado de la subred con "SubnetInUse" y la red queda huérfana.
     avisos: list[str] = []
     nombres_red_vivos = {e.nombre_red for e in slc_nuevo.enlaces if e.nombre_red}
     for enlace in enlaces_quitados:
-        if enlace.nodo_origen not in ids_nuevos or enlace.nodo_destino not in ids_nuevos:
-            continue    # su extremo se está borrando completo; lo maneja el paso de nodos
-        try:
-            for nid in (enlace.nodo_origen, enlace.nodo_destino):
+        for nid in (enlace.nodo_origen, enlace.nodo_destino):
+            if nid not in ids_nuevos:
+                continue    # este extremo se borra completo; su VM se lleva su propio puerto
+            try:
                 n_viejo = slc_viejo.nodo(nid)
                 driver.desconectar_interfaz(hosts_por_id[n_viejo.host_id].uri_libvirt,
                                             n_viejo.nombre, enlace.nombre_red)
-            if enlace.nombre_red not in nombres_red_vivos:
-                for nid in (enlace.nodo_origen, enlace.nodo_destino):
-                    n_viejo = slc_viejo.nodo(nid)
-                    driver.eliminar_red(hosts_por_id[n_viejo.host_id].uri_libvirt, enlace.nombre_red)
-                if enlace.vlan_id is not None:
-                    vlan_allocator.liberar_una(slc_nuevo.id, enlace.vlan_id)
-        except Exception as exc:       # noqa: BLE001
-            avisos.append(f"no se pudo desconectar/borrar el enlace {enlace.id}: {exc}")
-            logger.warning("Edición de %s: %s", slc_nuevo.id, avisos[-1])
+            except Exception as exc:       # noqa: BLE001
+                avisos.append(f"no se pudo desconectar {n_viejo.nombre} del enlace {enlace.id}: {exc}")
+                logger.warning("Edición de %s: %s", slc_nuevo.id, avisos[-1])
 
     for nodo in nodos_quitados:
         try:
@@ -605,17 +611,16 @@ def editar_slice_desplegado(
         except Exception as exc:       # noqa: BLE001
             avisos.append(f"no se pudo eliminar la VM {nodo.nombre}: {exc}")
             logger.warning("Edición de %s: %s", slc_nuevo.id, avisos[-1])
-    for enlace in slc_viejo.enlaces:
-        if _par(enlace) in pares_nuevos:
-            continue
-        if enlace.nodo_origen in ids_nuevos and enlace.nodo_destino in ids_nuevos:
-            continue    # ya se manejó arriba (ambos extremos sobreviven)
+
+    for enlace in enlaces_quitados:
         if enlace.nombre_red in nombres_red_vivos or enlace.nombre_red is None:
             continue
         try:
-            host_o = hosts_por_id[slc_viejo.nodo(enlace.nodo_origen).host_id]
-            host_d = hosts_por_id[slc_viejo.nodo(enlace.nodo_destino).host_id]
-            for h in {host_o.id: host_o, host_d.id: host_d}.values():
+            hosts_extremos = {
+                hosts_por_id[slc_viejo.nodo(nid).host_id].id: hosts_por_id[slc_viejo.nodo(nid).host_id]
+                for nid in (enlace.nodo_origen, enlace.nodo_destino)
+            }
+            for h in hosts_extremos.values():
                 driver.eliminar_red(h.uri_libvirt, enlace.nombre_red)
             if enlace.vlan_id is not None:
                 vlan_allocator.liberar_una(slc_nuevo.id, enlace.vlan_id)
