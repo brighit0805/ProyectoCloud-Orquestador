@@ -452,7 +452,8 @@ class ServicioSlices:
             try:
                 est = EstrategiaPlacement(estrategia)
             except ValueError:
-                raise ErrorServicio("Estrategia inválida: use 'balanceado' o 'round_robin'") from None
+                raise ErrorServicio(
+                    "Estrategia inválida: use 'balanceado', 'round_robin' u 'objetivo'") from None
             problemas = composicion.validar(slc)
             if problemas:
                 raise ErrorServicio("El diseño no es desplegable: " + "; ".join(problemas))

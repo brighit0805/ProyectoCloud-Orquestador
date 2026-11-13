@@ -11,7 +11,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 
-from slice_orchestrator import cli, composicion
+from slice_orchestrator import cli, composicion, vm_placement
 from slice_orchestrator.models import EstadoSlice, TipoTopologia
 from slice_orchestrator.servicio_slices import (
     ErrorServicio,
@@ -153,6 +153,18 @@ class TestServicio(unittest.TestCase):
                                  "vm5": "worker2", "vm3": "worker3", "vm6": "worker3"})
         self.assertEqual({n["clave"] for n in d["nodos"] if n["acceso_internet"]}, {"vm1", "vm3"})
         self.assertEqual(len({e["vlan"] for e in d["enlaces"]}), 6)
+
+    def test_estrategia_objetivo_usa_el_scheduler_desde_el_servicio(self):
+        """Hallazgo del 12-nov: el Scheduler (filtros+pesadores+función
+        objetivo, Lab 7) ya existía pero estaba inalcanzable desde el flujo
+        real de usuario -- solo se probaba con un script aparte. Esta prueba
+        confirma que, a través de ServicioSlices (el mismo camino que usa la
+        CLI), 'objetivo' ya funciona de extremo a extremo."""
+        d = self.svc.crear_slice("ana", spec_ex1("obj"), desplegar=True, estrategia="objetivo")
+        self.assertEqual(d["estado"], "activo")
+        resultado = vm_placement.obtener_ultimo_resultado()
+        self.assertIsNotNone(resultado)       # confirma que SI paso por el Scheduler
+        self.assertTrue(all(n["host"] for n in d["nodos"]))
 
     def test_topologias_predefinidas_malla_arbol_y_bus(self):
         m = self.svc.crear_slice("ana", spec_simple("m", "malla", 4), desplegar=True)
@@ -584,6 +596,24 @@ class TestCLI(unittest.TestCase):
                       "--capacidad", "vm1=vcpu"]):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 self.correr(*args)
+
+    def test_estrategia_objetivo_es_aceptada_por_la_cli_real(self):
+        """Hallazgo del 12-nov: antes de este cambio, argparse rechazaba
+        '--estrategia objetivo' en la CLI real (solo 'balanceado'/'round_robin'
+        estaban en choices=), aunque el Scheduler ya funcionaba por dentro.
+        Esta prueba usa cli.main(...) tal cual la usaría una persona en la
+        terminal -- no ServicioSlices directamente -- para confirmar que el
+        camino completo CLI -> servicio -> orquestador -> Scheduler quedó
+        realmente cableado de punta a punta."""
+        c, out, err = self.correr("slice", "crear", "--nombre", "ex1obj", "--tipo", "anillo", "--nodos", "4",
+                                  "--rama", "vm4:lineal:2", "--flavor", "vm2=cirros", "--flavor", "vm6=cirros",
+                                  "--internet", "vm1", "--internet", "vm3", "--zona", "az-lab",
+                                  "--capacidad", "vm3=vcpu:2,ram:1024,disco:8", "--desplegar",
+                                  "--estrategia", "objetivo")
+        self.assertEqual(c, 0, err)
+        self.assertIn("activo", out)
+        resultado = vm_placement.obtener_ultimo_resultado()
+        self.assertIsNotNone(resultado)   # confirma que de verdad pasó por el Scheduler
 
 
 if __name__ == "__main__":

@@ -276,7 +276,10 @@ def construir_parser() -> argparse.ArgumentParser:
     c.add_argument("--enlace-quitado", action="append", default=[], type=_par, metavar="A,B")
     c.add_argument("--zona")
     c.add_argument("--desplegar", action="store_true")
-    c.add_argument("--estrategia", default="balanceado", choices=["balanceado", "round_robin"])
+    c.add_argument("--estrategia", default="balanceado",
+                   choices=["balanceado", "round_robin", "objetivo"],
+                   help="'objetivo' usa el Scheduler inteligente (filtros + pesadores + "
+                        "función objetivo, Lab 7); 'balanceado'/'round_robin' no revisan disco")
 
     s.add_parser("listar", help="sus slices")
     for nombre, ayuda in (("ver", "detalle de un slice"), ("eliminar", "borrar un slice"),
@@ -284,7 +287,8 @@ def construir_parser() -> argparse.ArgumentParser:
         x = s.add_parser(nombre, help=ayuda)
         x.add_argument("id")
         if nombre == "desplegar":
-            x.add_argument("--estrategia", default="balanceado", choices=["balanceado", "round_robin"])
+            x.add_argument("--estrategia", default="balanceado",
+                           choices=["balanceado", "round_robin", "objetivo"])
 
     e = s.add_parser("editar", help="componer y editar un slice en BORRADOR (todo o nada)")
     e.add_argument("id")
