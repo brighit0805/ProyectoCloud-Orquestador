@@ -447,6 +447,22 @@ def editar_slice_desplegado(
     vlan_allocator = vlan_allocator or _VLAN_ALLOCATOR_PREDETERMINADO
     hosts_por_id = {h.id: h for h in hosts}
 
+    # Mismo hallazgo del 12-nov que ya resolvían desplegar_slice_existente/
+    # eliminar_slice: 'slice editar' corre en un proceso de CLI nuevo, con
+    # una instancia de DriverOpenStack que nunca llamó a preparar_slice() y
+    # por lo tanto no conoce el proyecto del slice (proyecto_id solo vive en
+    # memoria de esa instancia). Sin este llamado, conectar_interfaz/crear_red
+    # fallan con "No hay proyecto activo" aunque el slice sí exista y esté
+    # ACTIVO. preparar_slice() es idempotente (reutiliza el proyecto si ya
+    # existe), así que llamarlo aquí es seguro y no toca nada ya desplegado.
+    # Se le pasa slc_VIEJO (no slc_nuevo): preparar_slice calcula
+    # direccionamiento.interfaces_de() de cada nodo/enlace que recibe, y los
+    # enlaces/nodos nuevos de slc_nuevo todavía no tienen vlan_id/nombre_red
+    # asignado en este punto (eso ocurre más abajo) -- usar slc_nuevo aquí
+    # rompería con "el enlace no tiene red/VLAN asignada" antes de tiempo.
+    if hasattr(driver, "preparar_slice"):
+        driver.preparar_slice(slc_viejo)
+
     ids_viejos = {n.id for n in slc_viejo.nodos}
     ids_nuevos = {n.id for n in slc_nuevo.nodos}
     nodos_agregados = [n for n in slc_nuevo.nodos if n.id not in ids_viejos]
