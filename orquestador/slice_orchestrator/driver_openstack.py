@@ -323,8 +323,18 @@ class DriverOpenStack:
         return self.proyecto_id
 
     def liberar_slice(self, slice_id: str) -> None:
-        """Elimina el proyecto si lo creó este driver (no toca proyectos ajenos)."""
-        if self.proyecto_id and self._proyecto_creado:
+        """Elimina el proyecto del slice (``orq_<slice_id>``, siempre exclusivo
+        de ese slice por construcción -- ver preparar_slice).
+
+        Antes se exigía además ``self._proyecto_creado`` (que ESTA instancia lo
+        haya creado), pero esa bandera vive solo en memoria de un objeto en
+        particular: si 'crear'/'desplegar' y 'eliminar' corren en procesos
+        distintos de la CLI (el caso real, uno por invocación), la instancia
+        que elimina siempre lo redescubre vía preparar_slice() con
+        ``_proyecto_creado = False`` y nunca lo borraría. El nombre determina
+        la propiedad, no quién lo creó, así que borrar siempre que haya un
+        ``proyecto_id`` resuelto para este slice es seguro."""
+        if self.proyecto_id:
             self._api("admin", "DELETE", f"{self.config.keystone}/projects/{self.proyecto_id}",
                       esperado=(204,), tolerar=(404,))
             logger.info("[OPENSTACK] proyecto %s eliminado", self.proyecto_id)

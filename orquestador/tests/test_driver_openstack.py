@@ -201,6 +201,29 @@ class TestDespliegueCompleto(unittest.TestCase):
         self.assertEqual(len(sim.proyectos), 0)
         self.assertEqual(slc.estado, EstadoSlice.ELIMINADO)
 
+    def test_eliminar_slice_desde_una_instancia_nueva_del_driver_tambien_limpia_todo(self):
+        """Hallazgo del 12-nov, reproducido contra el clúster real de PUCP:
+        'crear'/'desplegar' y 'eliminar' corren en invocaciones separadas de
+        la CLI, cada una con su propia instancia de DriverOpenStack.
+        proyecto_id vive solo en memoria de esa instancia (preparar_slice lo
+        asigna ahí, no en el estado persistido). Antes de este fix, una
+        instancia nueva -- que nunca llamó a preparar_slice -- no sabía a qué
+        proyecto pertenecían las VMs, y eliminar_vm no hacía NADA (sin
+        avisar): el orquestador marcaba el slice 'eliminado' mientras las VMs
+        seguían ACTIVE de verdad en Nova. Esta prueba simula el escenario
+        exacto: dos instancias de DriverOpenStack compartiendo el mismo
+        clúster (misma SesionSimulada) -- una despliega, otra, nueva, elimina."""
+        d1 = driver_simulado()
+        slc, hosts = desplegar(anillo3(), d1)
+        d2 = driver_simulado()
+        d2.sesion = d1.sesion          # misma "nube" real, instancia de driver distinta
+        self.assertIsNone(d2.proyecto_id)   # la instancia nueva no sabe nada del proyecto
+        eliminar_slice(slc, hosts, d2, VLANAllocator())
+        sim = d2.sesion
+        self.assertEqual((len(sim.servidores), len(sim.puertos), len(sim.subredes)), (0, 0, 0))
+        self.assertEqual(len(sim.proyectos), 0)
+        self.assertEqual(slc.estado, EstadoSlice.ELIMINADO)
+
     def test_se_registran_los_comandos_que_se_enviarian(self):
         d = driver_simulado()
         desplegar(anillo3(), d)

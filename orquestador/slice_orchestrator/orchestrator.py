@@ -346,6 +346,19 @@ def eliminar_slice(slc: Slice, hosts: list[Host], driver: DriverLinux | None = N
     vlan_allocator = vlan_allocator or _VLAN_ALLOCATOR_PREDETERMINADO
     slc.estado = EstadoSlice.ELIMINANDO
 
+    # Hallazgo del 12-nov (prueba real contra el clúster): con el driver
+    # OpenStack real, cada invocación de la CLI crea una instancia NUEVA del
+    # driver -- preparar_slice() (llamado durante el despliegue) guarda el
+    # project_id solo en memoria de esa instancia, nunca en el estado
+    # persistido. Si se elimina el slice desde otra invocación/proceso, el
+    # driver nuevo no sabe a qué proyecto de OpenStack pertenecen las VMs, y
+    # antes de este fix 'eliminar_vm' simplemente no hacía nada (sin avisar),
+    # dejando VMs reales corriendo mientras el orquestador reportaba
+    # "eliminado". preparar_slice() ya es idempotente (reutiliza el proyecto
+    # si ya existe, por nombre), así que repetir la llamada aquí es seguro.
+    if hasattr(driver, "preparar_slice"):
+        driver.preparar_slice(slc)
+
     for nodo in slc.nodos:
         if nodo.host_id is None:
             continue
