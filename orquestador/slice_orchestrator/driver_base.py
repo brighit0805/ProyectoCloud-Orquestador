@@ -12,6 +12,15 @@ driver OpenStack").
 Métodos opcionales (los usa el orquestador solo si el driver los tiene):
     preparar_slice(slc)       crea lo propio del slice (p. ej. el proyecto OpenStack)
     liberar_slice(slice_id)   lo libera al eliminar o al revertir un despliegue
+    verificar_vm(host_uri, nombre_vm) -> str
+        consulta el estado REAL de la VM en la plataforma (p. ej. "ACTIVE",
+        "ERROR", "BUILD"). Lo usa el orquestador justo despues de crear_vm()
+        para confirmar que la creacion asincrona realmente terminó bien antes
+        de dar el slice por desplegado (ver orchestrator._verificar_vm_activa).
+        DriverLinux no lo implementa porque su creación ya es síncrona
+        (crear_vm() no retorna hasta que la VM existe o lanza una excepción);
+        DriverOpenStack sí, porque Nova acepta la creación (202) antes de que
+        la VM termine de construirse.
 """
 
 from __future__ import annotations

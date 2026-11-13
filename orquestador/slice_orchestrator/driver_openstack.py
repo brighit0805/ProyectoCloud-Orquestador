@@ -633,6 +633,28 @@ class DriverOpenStack:
             if p.get("name", "").startswith(f"{nombre_vm}:"):
                 self._api("admin", "DELETE", f"{c.neutron}/ports/{p['id']}", esperado=(204,), tolerar=(404,))
 
+    def verificar_vm(self, host_uri: str, nombre_vm: str) -> str:
+        """Consulta el estado REAL de la instancia en Nova. crear_vm() solo
+        confirma que Nova ACEPTO la peticion (202); la VM se termina de
+        construir en segundo plano y puede terminar en ERROR (por ejemplo,
+        NoValidHost real detectado recien al intentar reservar el disco en
+        el host elegido -- visto en el clúster del curso el 12-nov con la
+        estrategia ROUND_ROBIN, que no revisa disco al elegir host).
+
+        Devuelve el ``status`` tal cual lo reporta Nova ("ACTIVE", "ERROR",
+        "BUILD", etc.). Si la instancia ya no aparece (se borró sola o nunca
+        llegó a crearse del todo), se trata como "ERROR": no puede estar
+        lista si ya no existe."""
+        c = self.config
+        r = self._api("proyecto", "GET", c.nova + "/servers", params={"name": f"^{nombre_vm}$"})
+        servidores = r.json().get("servers", [])
+        if not servidores:
+            return "ERROR"
+        detalle = self._api("proyecto", "GET", f"{c.nova}/servers/{servidores[0]['id']}", tolerar=(404,))
+        if detalle.status_code == 404:
+            return "ERROR"
+        return detalle.json()["server"].get("status", "UNKNOWN")
+
     # ----------------------------------------------------------------- consulta
     def url_consola(self, nombre_vm: str) -> str:
         """URL noVNC de la instancia (los tokens caducan en pocos minutos)."""

@@ -19,6 +19,18 @@ enunciado de este laboratorio ("sin APIs, sólo funciones").
 Manejo de fallas: si una VM falla a mitad de despliegue, se ejecuta el
 `orden_rollback` calculado por Topology Manager, deshaciendo solo lo que
 alcanzó a crearse (RF-18 del Entregable 1).
+
+Verificación asíncrona (hallazgo del 12-nov, clúster real): un driver cuya
+creación es asíncrona (OpenStack: Nova responde 202 "aceptado" antes de que
+la VM termine de construirse) puede aceptar la orden y, en segundo plano,
+terminar la VM en estado ERROR real -- sin que crear_vm() llegue a lanzar
+ninguna excepción. Si el driver expone el método opcional `verificar_vm()`
+(ver driver_base.py), justo después de cada crear_vm() se espera aquí a que
+la plataforma confirme ACTIVE; si confirma ERROR o nunca llega a tiempo, se
+lanza una excepción que dispara el MISMO mecanismo de rollback que ya existe
+para fallas síncronas (no es un camino nuevo, es extender el existente a
+este tipo de falla). DriverLinux no se ve afectado: no implementa
+`verificar_vm()` porque su creación ya es síncrona.
 """
 
 from __future__ import annotations
@@ -98,6 +110,8 @@ def desplegar_slice_existente(
     clave_ssh_publica: str | None = None,
     reintentos: int = 1,
     espera_reintento_s: float = 2.0,
+    intentos_verificacion: int = 20,
+    espera_verificacion_s: float = 3.0,
 ) -> Slice:
     """
     ``config_acceso`` (opcional) activa la interfaz de acceso a Internet de los
@@ -106,6 +120,14 @@ def desplegar_slice_existente(
 
     ``reintentos``: veces que se intenta cada operación del driver antes de
     darla por fallida (1 = sin reintentos). Solo si se agotan se hace rollback.
+
+    ``intentos_verificacion``/``espera_verificacion_s``: solo aplican si el
+    driver implementa ``verificar_vm()`` (ver driver_base.py). Tras cada
+    crear_vm(), se consulta el estado real hasta ``intentos_verificacion``
+    veces (esperando ``espera_verificacion_s`` segundos entre cada una) hasta
+    que la plataforma confirme ACTIVE. Si confirma ERROR o se agotan los
+    intentos sin confirmar ACTIVE, se aborta el despliegue y se revierte todo
+    lo creado hasta ese punto (mismo mecanismo que cualquier otra falla).
 
     Despliega un Slice ya construido —por ejemplo uno en estado BORRADOR, o
     el que devuelve ``construir_ex1_topology``— sin volver a generar su
@@ -192,8 +214,14 @@ def desplegar_slice_existente(
                         acceso=acceso_drv,
                     ),
                     f"crear_vm {nodo.nombre} en {host.id}", reintentos, espera_reintento_s)
-                nodo.estado = "activo"
+                # Se registra ANTES de verificar: si la verificación de abajo
+                # falla, el rollback (que recorre `ejecutados`) debe borrar
+                # también esta VM, no solo las anteriores.
                 ejecutados.append({"accion": "crear_vm", "nodo_id": nodo.id, "host_id": host.id})
+                _verificar_vm_activa(
+                    driver, host.uri_libvirt, nodo.nombre,
+                    f"VM {nodo.nombre} en {host.id}", intentos_verificacion, espera_verificacion_s)
+                nodo.estado = "activo"
 
     except Exception as exc:
         logger.error("Falló el despliegue del slice %s en el paso %s: %s. Ejecutando rollback...",
@@ -222,6 +250,40 @@ def _con_reintentos(operacion, descripcion: str, reintentos: int, espera_s: floa
             logger.warning("%s falló (intento %d/%d): %s. Reintentando en %.0f s...",
                            descripcion, intento, reintentos, exc, espera_s)
             time.sleep(espera_s)
+
+
+_ESTADOS_TERMINALES_ERROR = {"ERROR"}
+_ESTADOS_TERMINALES_OK = {"ACTIVE"}
+
+
+def _verificar_vm_activa(driver, host_uri: str, nombre_vm: str, descripcion: str,
+                         intentos: int, espera_s: float) -> None:
+    """Espera a que la plataforma confirme que la VM recién creada quedó
+    realmente ACTIVE, si el driver sabe consultarlo (``verificar_vm``,
+    opcional -- ver driver_base.py). Si el driver no lo implementa (como
+    DriverLinux, cuya creación ya es síncrona), no hace nada: se asume éxito,
+    igual que antes de este chequeo.
+
+    Lanza RuntimeError si la plataforma confirma ERROR, o si se agotan los
+    intentos sin llegar a un estado terminal -- en ambos casos el llamador
+    (desplegar_slice_existente) lo captura y dispara el rollback existente."""
+    if not hasattr(driver, "verificar_vm"):
+        return
+    estado = "DESCONOCIDO"
+    for intento in range(1, max(1, intentos) + 1):
+        estado = driver.verificar_vm(host_uri, nombre_vm)
+        if estado in _ESTADOS_TERMINALES_OK:
+            return
+        if estado in _ESTADOS_TERMINALES_ERROR:
+            raise RuntimeError(
+                f"{descripcion}: la plataforma confirma estado '{estado}' real "
+                f"(no ACTIVE) tras la creación -- la creación asíncrona falló "
+                f"aunque la orden inicial haya sido aceptada")
+        if intento < intentos:
+            time.sleep(espera_s)
+    raise RuntimeError(
+        f"{descripcion}: tras {intentos} verificaciones no se confirmó ACTIVE "
+        f"(último estado real reportado: '{estado}')")
 
 
 def _interfaz_acceso(slc: Slice, nodo, config: dict | None):

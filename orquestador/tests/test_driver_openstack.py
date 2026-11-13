@@ -279,6 +279,20 @@ class TestIdempotenciaYErrores(unittest.TestCase):
         d.crear_vm("openstack://nova:worker1", "vm1", 1, 512, 1.0, "x", [("enlace-a", 3000)])
         self.assertIn("vnc_auto", d.url_consola("vm1"))
 
+    def test_verificar_vm_devuelve_el_estado_real_de_nova(self):
+        """La creacion (crear_vm) es asincrona: 202 Accepted no significa
+        ACTIVE. verificar_vm() debe consultar el estado real por separado."""
+        d, _ = self.preparado()
+        d.crear_red("openstack://nova", "enlace-a", 3000)
+        d.crear_vm("openstack://nova:worker1", "vm1", 1, 512, 1.0, "x", [("enlace-a", 3000)])
+        self.assertEqual(d.verificar_vm("openstack://nova:worker1", "vm1"), "ACTIVE")
+
+    def test_verificar_vm_reporta_error_si_la_instancia_no_existe(self):
+        """Si la instancia ya no aparece (nunca se creo del todo, o
+        desaparecio), se trata como ERROR: no puede estar activa."""
+        d, _ = self.preparado()
+        self.assertEqual(d.verificar_vm("openstack://nova:worker1", "fantasma"), "ERROR")
+
 
 class TestReintentosYRollback(unittest.TestCase):
     def test_con_reintentos_una_falla_transitoria_se_recupera(self):
@@ -306,6 +320,69 @@ class TestReintentosYRollback(unittest.TestCase):
         self.assertEqual(len(sim.proyectos), 0)
         for h in hosts:
             self.assertEqual((h.vcpu_usados, h.ram_usados_mb), (0, 0))
+
+    def test_vm_que_termina_en_error_real_dispara_rollback_aunque_nova_la_haya_aceptado(self):
+        """Reproduce el hallazgo del 12-nov contra el clúster real: con
+        ROUND_ROBIN (que no revisa disco al elegir host), Nova puede
+        ACEPTAR la creación (202) de una VM y que esa misma VM termine en
+        ERROR real poco después -- sin que crear_vm() llegue a lanzar
+        ninguna excepción. Antes de este fix, el slice quedaba "ACTIVO" con
+        una VM real en ERROR (visto con forzar_error_round_robin.py: 3
+        ACTIVE + 1 ERROR, reportado igual como activo). Con la verificación
+        post-creación, debe abortar y revertir TODAS las VMs del slice, no
+        solo la que falló."""
+
+        class ConUnaInstanciaEnError(SesionSimulada):
+            nombre_en_error = "anillo-vm2"
+
+            def request(self, metodo, url, headers=None, json=None, params=None, timeout=None):
+                resp = super().request(metodo, url, headers, json, params, timeout)
+                ruta = "/" + url.split("//", 1)[1].split("/", 1)[1]
+                if metodo == "GET" and ruta.startswith("/v2.1/servers/") and resp.status_code == 200:
+                    servidor = resp.json().get("server", {})
+                    if servidor.get("name") == self.nombre_en_error:
+                        servidor["status"] = "ERROR"
+                return resp
+
+        d = driver_simulado()
+        d.sesion = ConUnaInstanciaEnError(d.config)
+        hosts = d.descubrir_hosts()
+        with self.assertRaises(DespliegueFallidoError) as cm:
+            desplegar_slice_existente(anillo3(), hosts, d, VLANAllocator(),
+                                      EstrategiaPlacement.ROUND_ROBIN,
+                                      espera_verificacion_s=0.0)
+        self.assertIn("ERROR", str(cm.exception))
+        sim = d.sesion
+        # Rollback completo: ninguna de las 3 VMs del anillo debe sobrevivir,
+        # no solo la que Nova reportó en ERROR.
+        self.assertEqual((len(sim.servidores), len(sim.puertos), len(sim.subredes)), (0, 0, 0))
+        self.assertEqual([r["name"] for r in sim.redes.values()], ["external"])
+        self.assertEqual(len(sim.proyectos), 0)
+        for h in hosts:
+            self.assertEqual((h.vcpu_usados, h.ram_usados_mb), (0, 0))
+
+    def test_vm_que_no_confirma_estado_a_tiempo_tambien_dispara_rollback(self):
+        """Si la plataforma nunca llega a confirmar ACTIVE (se queda en BUILD
+        indefinidamente), tampoco debe reportarse el slice como activo."""
+
+        class SiempreEnBuild(SesionSimulada):
+            def request(self, metodo, url, headers=None, json=None, params=None, timeout=None):
+                resp = super().request(metodo, url, headers, json, params, timeout)
+                ruta = "/" + url.split("//", 1)[1].split("/", 1)[1]
+                if metodo == "GET" and ruta.startswith("/v2.1/servers/") and resp.status_code == 200:
+                    resp.json()["server"]["status"] = "BUILD"
+                return resp
+
+        d = driver_simulado()
+        d.sesion = SiempreEnBuild(d.config)
+        hosts = d.descubrir_hosts()
+        with self.assertRaises(DespliegueFallidoError) as cm:
+            desplegar_slice_existente(anillo3(), hosts, d, VLANAllocator(),
+                                      EstrategiaPlacement.ROUND_ROBIN,
+                                      intentos_verificacion=2, espera_verificacion_s=0.0)
+        self.assertIn("no se confirmó ACTIVE", str(cm.exception))
+        sim = d.sesion
+        self.assertEqual((len(sim.servidores), len(sim.puertos), len(sim.subredes)), (0, 0, 0))
 
 
 class TestSincronizarCatalogoFlavors(unittest.TestCase):
