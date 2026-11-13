@@ -359,11 +359,29 @@ class TestServicio(unittest.TestCase):
         with self.assertRaises(ErrorServicio):
             self.svc.editar_slice("ana", d["id"], [])
 
-    def test_un_slice_activo_no_se_edita(self):
+    def test_editar_slice_activo_con_grafo_desconectado_se_rechaza(self):
+        # Desde el 13-nov un slice ACTIVO SÍ se puede editar (en vivo), pero
+        # igual que en BORRADOR, el resultado debe seguir siendo un diseño
+        # válido (conexo) -- agregar un nodo suelto sin conectarlo se rechaza.
         d = self.svc.crear_slice("ana", spec_simple("e"), desplegar=True)
         with self.assertRaises(ErrorServicio) as ctx:
             self.svc.editar_slice("ana", d["id"], [{"op": "agregar_nodo"}])
-        self.assertIn("plantilla", str(ctx.exception))
+        self.assertIn("no es válido", str(ctx.exception))
+        self.assertEqual(self.svc.ver_slice("ana", d["id"])["estado"], "activo")
+
+    def test_editar_slice_activo_agrega_nodo_en_vivo(self):
+        d = self.svc.crear_slice("ana", spec_simple("e"), desplegar=True)
+        claves_viejas = {n["clave"] for n in d["nodos"]}
+        nueva_clave = f"vm{len(d['nodos']) + 1}"      # próxima clave que asignará agregar_nodo
+        resultado = self.svc.editar_slice("ana", d["id"], [
+            {"op": "agregar_nodo"},
+            {"op": "agregar_enlace", "a": d["nodos"][0]["clave"], "b": nueva_clave},
+        ])
+        self.assertEqual(resultado["estado"], "activo")
+        self.assertEqual(len(resultado["nodos"]), len(d["nodos"]) + 1)
+        nuevo = next(n for n in resultado["nodos"] if n["clave"] not in claves_viejas)
+        self.assertEqual(nuevo["clave"], nueva_clave)
+        self.assertIsNotNone(nuevo["host"])
 
     def test_no_se_despliega_un_diseno_desconectado(self):
         d = self.svc.crear_slice("ana", spec_simple("e", "lineal", 3))

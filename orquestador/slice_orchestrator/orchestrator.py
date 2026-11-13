@@ -390,3 +390,245 @@ def eliminar_slice(slc: Slice, hosts: list[Host], driver: DriverLinux | None = N
     vlan_allocator.liberar(slc.id)
     slc.estado = EstadoSlice.ELIMINADO
     logger.info("Slice %s eliminado", slc.id)
+
+
+# ---------------------------------------------------------------------------
+# Edición en vivo de un slice ya ACTIVO (13-nov)
+# ---------------------------------------------------------------------------
+class EdicionEnVivoError(Exception):
+    """Falló aplicar la edición contra la infraestructura real; se revirtió
+    lo que esta llamada alcanzó a agregar (nunca lo que ya existía antes)."""
+
+
+def _par(e) -> frozenset:
+    return frozenset((e.nodo_origen, e.nodo_destino))
+
+
+def editar_slice_desplegado(
+    slc_viejo: Slice,
+    slc_nuevo: Slice,
+    hosts: list[Host],
+    driver: DriverLinux | None = None,
+    vlan_allocator: network_manager.VLANAllocator | None = None,
+    estrategia: vm_placement.EstrategiaPlacement = vm_placement.EstrategiaPlacement.BALANCEADO,
+    config_acceso: dict | None = None,
+    clave_ssh_publica: str | None = None,
+    reintentos: int = 1,
+    espera_reintento_s: float = 2.0,
+    intentos_verificacion: int = 20,
+    espera_verificacion_s: float = 3.0,
+) -> Slice:
+    """
+    Aplica sobre un slice YA DESPLEGADO (ACTIVO) la diferencia entre su grafo
+    actual (``slc_viejo``, tal cual está corriendo: con host_id/vlan_id/
+    nombre_red asignados) y el grafo editado (``slc_nuevo``, mismo id,
+    construido aplicando composicion.* sobre una COPIA de slc_viejo que
+    conserva esos campos para lo que no cambió -- a diferencia del camino de
+    edición en BORRADOR, aquí NO se borran host_id/vlan_id/nombre_red antes
+    de llamar a esta función). Crea/conecta solo lo que se agregó y borra/
+    desconecta solo lo que se quitó -- las VMs y enlaces sin cambios no se
+    tocan.
+
+    Limitación conocida: si el slice editado deja de clasificar como BUS
+    (clasificar() no reconoce esa figura, solo lineal/anillo/malla/árbol),
+    cada enlace nuevo recibe su propia VLAN, igual que las demás topologías
+    -- la edición en vivo de un slice BUS no preserva el segmento
+    compartido. No bloqueante hoy: bus no se ofrece como injerto editable.
+
+    Lanza EdicionEnVivoError si algo falla al AGREGAR; en ese caso revierte
+    únicamente lo que esta llamada alcanzó a crear/conectar (las VMs/enlaces
+    que ya estaban corriendo antes de editar quedan intactos). Un fallo al
+    QUITAR algo (después de que agregar ya terminó bien) no revierte las
+    altas ya aplicadas -- se registra como advertencia y se informa qué
+    recurso pudo haber quedado sin limpiar, en vez de deshacer trabajo que
+    sí se completó.
+    """
+    driver = driver or _DRIVER_PREDETERMINADO
+    vlan_allocator = vlan_allocator or _VLAN_ALLOCATOR_PREDETERMINADO
+    hosts_por_id = {h.id: h for h in hosts}
+
+    ids_viejos = {n.id for n in slc_viejo.nodos}
+    ids_nuevos = {n.id for n in slc_nuevo.nodos}
+    nodos_agregados = [n for n in slc_nuevo.nodos if n.id not in ids_viejos]
+    nodos_quitados = [n for n in slc_viejo.nodos if n.id not in ids_nuevos]
+
+    pares_viejos = {_par(e): e for e in slc_viejo.enlaces}
+    pares_nuevos = {_par(e): e for e in slc_nuevo.enlaces}
+    enlaces_agregados = [e for par, e in pares_nuevos.items() if par not in pares_viejos]
+    enlaces_quitados = [e for par, e in pares_viejos.items() if par not in pares_nuevos]
+
+    nodos_por_id_nuevo = {n.id: n for n in slc_nuevo.nodos}
+    ejecutados: list[dict] = []
+
+    try:
+        # --- 1) Colocar los nodos nuevos (host físico), sin tocar los que ya corrían ---
+        if nodos_agregados:
+            mini = Slice(id=slc_nuevo.id, nombre=slc_nuevo.nombre, owner=slc_nuevo.owner,
+                        tipo_topologia=slc_nuevo.tipo_topologia, nodos=nodos_agregados,
+                        enlaces=[], zona_disponibilidad=slc_nuevo.zona_disponibilidad)
+            asignacion = vm_placement.asignar_hosts(mini, hosts, estrategia, driver=driver)
+            vm_placement.confirmar_asignacion(mini, hosts, asignacion)
+            for n in nodos_agregados:
+                ejecutados.append({"accion": "coloco_nodo", "nodo_id": n.id})
+
+        # --- 2) Reservar VLAN + crear la red de cada enlace nuevo ---
+        for enlace in enlaces_agregados:
+            vlan_id = vlan_allocator.reservar_una(slc_nuevo.id)
+            enlace.vlan_id = vlan_id
+            enlace.nombre_red = f"br-{slc_nuevo.id}-vivo-vlan{vlan_id}"
+            ejecutados.append({"accion": "vlan_vivo", "vlan_id": vlan_id})
+            n_origen = nodos_por_id_nuevo[enlace.nodo_origen]
+            n_destino = nodos_por_id_nuevo[enlace.nodo_destino]
+            host_origen = hosts_por_id[n_origen.host_id]
+            host_destino = hosts_por_id[n_destino.host_id]
+            for h in {host_origen.id: host_origen, host_destino.id: host_destino}.values():
+                _con_reintentos(
+                    lambda h=h: driver.crear_red(h.uri_libvirt, enlace.nombre_red, enlace.vlan_id),
+                    f"crear_red {enlace.nombre_red} en {h.id}", reintentos, espera_reintento_s)
+                ejecutados.append({"accion": "crear_red", "enlace_id": enlace.id, "host_id": h.id})
+
+            # Si alguno de los dos extremos YA estaba corriendo (no es un nodo
+            # nuevo de este mismo cambio), hay que conectarle la interfaz en
+            # caliente -- si es nuevo, la recibirá al crearse en el paso 3.
+            for n, host in ((n_origen, host_origen), (n_destino, host_destino)):
+                if n.id in ids_viejos:
+                    itf = next((i for i in direccionamiento.interfaces_de(slc_nuevo, n)
+                               if i.enlace_id == enlace.id), None)
+                    if itf is None:
+                        raise RuntimeError(f"No se pudo calcular la interfaz del enlace {enlace.id}")
+                    _con_reintentos(
+                        lambda n=n, host=host, itf=itf: driver.conectar_interfaz(
+                            host.uri_libvirt, n.nombre, enlace.nombre_red, enlace.vlan_id,
+                            mac=itf.mac, ip=itf.cidr.split("/")[0]),
+                        f"conectar_interfaz {n.nombre}:{enlace.nombre_red}", reintentos, espera_reintento_s)
+                    ejecutados.append({"accion": "conectar_interfaz", "nodo_id": n.id,
+                                       "host_id": host.id, "nombre_red": enlace.nombre_red})
+
+        # --- 3) Crear las VMs nuevas, con TODAS sus interfaces (viejas+nuevas) ---
+        for nodo in nodos_agregados:
+            host = hosts_por_id[nodo.host_id]
+            redes_vm = []
+            for enlace in slc_nuevo.enlaces:
+                if nodo.id in (enlace.nodo_origen, enlace.nodo_destino):
+                    if enlace.nombre_red is None or enlace.vlan_id is None:
+                        raise RuntimeError(f"Red incompleta para el enlace {enlace.id}")
+                    tupla = (enlace.nombre_red, enlace.vlan_id)
+                    if tupla not in redes_vm:
+                        redes_vm.append(tupla)
+            interfaces = direccionamiento.interfaces_de(slc_nuevo, nodo)
+            acceso_nic, acceso_drv = _interfaz_acceso(slc_nuevo, nodo, config_acceso)
+            semilla = direccionamiento.archivos_semilla(nodo, interfaces, acceso_nic, clave_ssh_publica)
+            copiada = _con_reintentos(
+                lambda: driver.asegurar_imagen(host.uri_libvirt, nodo.imagen),
+                f"copiar imagen {nodo.imagen} a {host.id}", reintentos, espera_reintento_s)
+            if copiada:
+                ejecutados.append({"accion": "asegurar_imagen", "host_id": host.id, "imagen": nodo.imagen})
+            _con_reintentos(
+                lambda: driver.crear_vm(
+                    host_uri=host.uri_libvirt, nombre_vm=nodo.nombre, vcpu=nodo.vcpu,
+                    ram_mb=nodo.ram_mb, disco_gb=nodo.disco_gb, imagen=nodo.imagen,
+                    redes=redes_vm, macs=[i.mac for i in interfaces], semilla=semilla, acceso=acceso_drv),
+                f"crear_vm {nodo.nombre} en {host.id}", reintentos, espera_reintento_s)
+            ejecutados.append({"accion": "crear_vm", "nodo_id": nodo.id, "host_id": host.id})
+            _verificar_vm_activa(
+                driver, host.uri_libvirt, nodo.nombre,
+                f"VM {nodo.nombre} en {host.id}", intentos_verificacion, espera_verificacion_s)
+            nodo.estado = "activo"
+
+    except Exception as exc:
+        logger.error("Falló la edición en vivo del slice %s: %s. Revirtiendo solo lo agregado...",
+                     slc_nuevo.id, exc)
+        _revertir_edicion(slc_nuevo, hosts_por_id, ejecutados, driver, vlan_allocator)
+        raise EdicionEnVivoError(f"Edición del slice '{slc_nuevo.id}' abortada y revertida: {exc}") from exc
+
+    # --- 4) Quitar lo que sobra: enlaces primero, luego nodos completos ---
+    # (best-effort: un fallo aquí no deshace las altas ya confirmadas arriba)
+    avisos: list[str] = []
+    nombres_red_vivos = {e.nombre_red for e in slc_nuevo.enlaces if e.nombre_red}
+    for enlace in enlaces_quitados:
+        if enlace.nodo_origen not in ids_nuevos or enlace.nodo_destino not in ids_nuevos:
+            continue    # su extremo se está borrando completo; lo maneja el paso de nodos
+        try:
+            for nid in (enlace.nodo_origen, enlace.nodo_destino):
+                n_viejo = slc_viejo.nodo(nid)
+                driver.desconectar_interfaz(hosts_por_id[n_viejo.host_id].uri_libvirt,
+                                            n_viejo.nombre, enlace.nombre_red)
+            if enlace.nombre_red not in nombres_red_vivos:
+                for nid in (enlace.nodo_origen, enlace.nodo_destino):
+                    n_viejo = slc_viejo.nodo(nid)
+                    driver.eliminar_red(hosts_por_id[n_viejo.host_id].uri_libvirt, enlace.nombre_red)
+                if enlace.vlan_id is not None:
+                    vlan_allocator.liberar_una(slc_nuevo.id, enlace.vlan_id)
+        except Exception as exc:       # noqa: BLE001
+            avisos.append(f"no se pudo desconectar/borrar el enlace {enlace.id}: {exc}")
+            logger.warning("Edición de %s: %s", slc_nuevo.id, avisos[-1])
+
+    for nodo in nodos_quitados:
+        try:
+            host = hosts_por_id[nodo.host_id]
+            driver.eliminar_vm(host.uri_libvirt, nodo.nombre)
+            host.vcpu_usados = max(0, host.vcpu_usados - nodo.vcpu)
+            host.ram_usados_mb = max(0, host.ram_usados_mb - nodo.ram_mb)
+        except Exception as exc:       # noqa: BLE001
+            avisos.append(f"no se pudo eliminar la VM {nodo.nombre}: {exc}")
+            logger.warning("Edición de %s: %s", slc_nuevo.id, avisos[-1])
+    for enlace in slc_viejo.enlaces:
+        if _par(enlace) in pares_nuevos:
+            continue
+        if enlace.nodo_origen in ids_nuevos and enlace.nodo_destino in ids_nuevos:
+            continue    # ya se manejó arriba (ambos extremos sobreviven)
+        if enlace.nombre_red in nombres_red_vivos or enlace.nombre_red is None:
+            continue
+        try:
+            host_o = hosts_por_id[slc_viejo.nodo(enlace.nodo_origen).host_id]
+            host_d = hosts_por_id[slc_viejo.nodo(enlace.nodo_destino).host_id]
+            for h in {host_o.id: host_o, host_d.id: host_d}.values():
+                driver.eliminar_red(h.uri_libvirt, enlace.nombre_red)
+            if enlace.vlan_id is not None:
+                vlan_allocator.liberar_una(slc_nuevo.id, enlace.vlan_id)
+        except Exception as exc:       # noqa: BLE001
+            avisos.append(f"no se pudo borrar la red {enlace.nombre_red}: {exc}")
+            logger.warning("Edición de %s: %s", slc_nuevo.id, avisos[-1])
+
+    if avisos:
+        logger.warning("Edición en vivo de %s terminó con %d advertencia(s) al limpiar "
+                       "lo quitado (las altas sí se aplicaron): %s",
+                       slc_nuevo.id, len(avisos), "; ".join(avisos))
+    slc_nuevo.estado = EstadoSlice.ACTIVO
+    logger.info("Slice %s editado en vivo: +%d nodo(s)/-%d nodo(s), +%d enlace(s)/-%d enlace(s)",
+               slc_nuevo.id, len(nodos_agregados), len(nodos_quitados),
+               len(enlaces_agregados), len(enlaces_quitados))
+    return slc_nuevo
+
+
+def _revertir_edicion(slc: Slice, hosts_por_id: dict[str, Host], ejecutados: list[dict],
+                      driver: DriverLinux, vlan_allocator: network_manager.VLANAllocator) -> None:
+    """Deshace, en orden inverso, SOLO lo que ``editar_slice_desplegado``
+    alcanzó a agregar en esta llamada -- nunca lo que ya estaba corriendo
+    antes de editar."""
+    for paso in reversed(ejecutados):
+        try:
+            if paso["accion"] == "crear_vm":
+                nodo = slc.nodo(paso["nodo_id"])
+                driver.eliminar_vm(hosts_por_id[paso["host_id"]].uri_libvirt, nodo.nombre)
+            elif paso["accion"] == "conectar_interfaz":
+                nodo = slc.nodo(paso["nodo_id"])
+                driver.desconectar_interfaz(hosts_por_id[paso["host_id"]].uri_libvirt,
+                                            nodo.nombre, paso["nombre_red"])
+            elif paso["accion"] == "crear_red":
+                enlace = next(e for e in slc.enlaces if e.id == paso["enlace_id"])
+                driver.eliminar_red(hosts_por_id[paso["host_id"]].uri_libvirt, enlace.nombre_red)
+            elif paso["accion"] == "vlan_vivo":
+                vlan_allocator.liberar_una(slc.id, paso["vlan_id"])
+            elif paso["accion"] == "asegurar_imagen":
+                driver.liberar_imagen_si_huerfana(hosts_por_id[paso["host_id"]].uri_libvirt, paso["imagen"])
+            elif paso["accion"] == "coloco_nodo":
+                nodo = slc.nodo(paso["nodo_id"])
+                if nodo.host_id is not None:
+                    host = hosts_por_id[nodo.host_id]
+                    host.vcpu_usados = max(0, host.vcpu_usados - nodo.vcpu)
+                    host.ram_usados_mb = max(0, host.ram_usados_mb - nodo.ram_mb)
+                nodo.host_id = None
+        except Exception as exc:       # noqa: BLE001
+            logger.warning("No se pudo revertir el paso %s de la edición de %s: %s",
+                           paso, slc.id, exc)

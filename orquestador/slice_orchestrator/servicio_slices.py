@@ -62,7 +62,13 @@ from .models import (
     Slice,
     TipoTopologia,
 )
-from .orchestrator import DespliegueFallidoError, desplegar_slice_existente, eliminar_slice
+from .orchestrator import (
+    DespliegueFallidoError,
+    EdicionEnVivoError,
+    desplegar_slice_existente,
+    editar_slice_desplegado,
+    eliminar_slice,
+)
 from .topology_manager import Injerto, construir_topologia
 from .vm_placement import EstrategiaPlacement
 
@@ -379,15 +385,18 @@ class ServicioSlices:
         """Aplica una lista de operaciones de composición, todas o ninguna.
 
         Operaciones: agregar_nodo, agregar_enlace, quitar_enlace, eliminar_nodo,
-        injertar, capacidad, acceso_internet. Solo se editan slices en BORRADOR o
-        ERROR; la edición incremental de un slice activo está diseñada, no implementada.
+        injertar, capacidad, acceso_internet. En BORRADOR/ERROR, la edición
+        resetea todo a BORRADOR para un despliegue completo posterior. Si el
+        slice está ACTIVO (13-nov), se aplica en vivo: solo se crea/conecta lo
+        agregado y se borra/desconecta lo quitado, contra la infraestructura
+        real, sin tumbar las VMs/enlaces que no cambiaron.
         """
         usuario = self._usuario(usuario)
         with self._lock:
             slc = self._propio(usuario, slice_id)
-            if slc.estado not in (EstadoSlice.BORRADOR, EstadoSlice.ERROR):
+            if slc.estado not in (EstadoSlice.BORRADOR, EstadoSlice.ERROR, EstadoSlice.ACTIVO):
                 raise ErrorServicio(
-                    f"El slice está '{slc.estado.value}': solo se edita en BORRADOR o ERROR. "
+                    f"El slice está '{slc.estado.value}': no se puede editar en ese estado. "
                     "Exporte su plantilla, elimínelo y cree uno nuevo desde ella.")
             if not isinstance(operaciones, list) or not operaciones:
                 raise ErrorServicio("Indique al menos una operación de edición")
@@ -398,6 +407,23 @@ class ServicioSlices:
                 self._validar_imagenes(trabajo)
             except ValueError as exc:
                 raise ErrorServicio(str(exc)) from None
+
+            if slc.estado == EstadoSlice.ACTIVO:
+                problemas = composicion.validar(trabajo)
+                if problemas:
+                    raise ErrorServicio("El diseño editado no es válido: " + "; ".join(problemas))
+                try:
+                    editar_slice_desplegado(
+                        slc, trabajo, self._inventario(), self._driver, self._allocator(),
+                        reintentos=1, espera_reintento_s=0.0)
+                except EdicionEnVivoError as exc:
+                    logger.error("[%s] edición en vivo de %s falló: %s", usuario, slice_id, exc)
+                    raise ErrorServicio(f"No se pudo editar en vivo: {exc}") from None
+                self._slices[slice_id] = trabajo
+                self._guardar()
+                logger.info("[%s] editó en vivo %s (%d operaciones)", usuario, slice_id, len(operaciones))
+                return self.ver_slice(usuario, slice_id)
+
             trabajo.estado = EstadoSlice.BORRADOR
             for n in trabajo.nodos:
                 n.host_id = None

@@ -21,6 +21,19 @@ Métodos opcionales (los usa el orquestador solo si el driver los tiene):
         (crear_vm() no retorna hasta que la VM existe o lanza una excepción);
         DriverOpenStack sí, porque Nova acepta la creación (202) antes de que
         la VM termine de construirse.
+    conectar_interfaz(host_uri, nombre_vm, nombre_red, vlan_id, mac=None, ip=None)
+        agrega una interfaz de red a una VM YA CORRIENDO (edición en vivo de
+        un slice ACTIVO, 13-nov) -- a diferencia de las interfaces de
+        crear_vm(), que solo se definen al crear la VM. La red
+        (``nombre_red``) debe existir de antemano (crear_red() antes de
+        llamar a este método). Ambos drivers lo implementan: DriverLinux vía
+        libvirt attachDeviceFlags (persistente + en caliente), DriverOpenStack
+        vía la API de Nova "os-interface" (crea el puerto de Neutron y lo
+        asocia a la instancia).
+    desconectar_interfaz(host_uri, nombre_vm, nombre_red)
+        inversa de ``conectar_interfaz``: quita la interfaz de una VM ya
+        corriendo sin recrearla. Idempotente (no falla si la interfaz ya no
+        está, p. ej. si la VM se borró por otro lado).
 """
 
 from __future__ import annotations

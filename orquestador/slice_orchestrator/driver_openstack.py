@@ -663,6 +663,48 @@ class DriverOpenStack:
             if p.get("name", "").startswith(f"{nombre_vm}:"):
                 self._api("admin", "DELETE", f"{c.neutron}/ports/{p['id']}", esperado=(204,), tolerar=(404,))
 
+    # ------------------------------------------ edición en vivo (13-nov)
+    def conectar_interfaz(self, host_uri: str, nombre_vm: str, nombre_red: str,
+                          vlan_id: int, mac: str | None = None, ip: str | None = None) -> str:
+        """Agrega una interfaz a una instancia YA ACTIVE, sin recrearla
+        (edición en vivo de un slice ACTIVO). Crea un puerto de Neutron
+        nuevo en ``nombre_red`` (que debe existir de antemano, vía
+        ``crear_red()``) y lo asocia a la instancia con la API de Nova
+        "os-interface". Devuelve el id del puerto creado."""
+        self._registrar("conectar_interfaz", host_uri, f"{nombre_vm}:{nombre_red}")
+        self._proyecto()
+        c = self.config
+        red_id = self._redes.get(nombre_red) or self._buscar("networks", nombre_red, "networks")
+        if red_id is None:
+            raise DriverOpenStackError(f"La red {nombre_red} no existe; ¿se llamó a crear_red?")
+        puerto_id = self._crear_puerto(
+            self._nombre_puerto(nombre_vm, nombre_red), red_id, mac, ip, self._subredes.get(nombre_red))
+        r = self._api("proyecto", "GET", c.nova + "/servers", params={"name": f"^{nombre_vm}$"})
+        servidores = r.json().get("servers", [])
+        if not servidores:
+            raise DriverOpenStackError(f"La instancia {nombre_vm} no existe")
+        self._api("proyecto", "POST", f"{c.nova}/servers/{servidores[0]['id']}/os-interface",
+                  esperado=(200, 202), cuerpo={"interfaceAttachment": {"port_id": puerto_id}})
+        return puerto_id
+
+    def desconectar_interfaz(self, host_uri: str, nombre_vm: str, nombre_red: str) -> None:
+        """Inversa de ``conectar_interfaz``. Idempotente: no falla si la
+        instancia o el puerto ya no existen (p. ej. si la VM se borró por
+        otro lado)."""
+        self._registrar("desconectar_interfaz", host_uri, f"{nombre_vm}:{nombre_red}")
+        if self.proyecto_id is None:
+            return
+        c = self.config
+        r = self._api("proyecto", "GET", c.nova + "/servers", params={"name": f"^{nombre_vm}$"})
+        servidores = r.json().get("servers", [])
+        puerto_id = self._buscar("ports", self._nombre_puerto(nombre_vm, nombre_red), "ports")
+        if servidores and puerto_id:
+            self._api("proyecto", "DELETE",
+                      f"{c.nova}/servers/{servidores[0]['id']}/os-interface/{puerto_id}",
+                      esperado=(202, 204), tolerar=(404,))
+        if puerto_id:
+            self._api("admin", "DELETE", f"{c.neutron}/ports/{puerto_id}", esperado=(204,), tolerar=(404,))
+
     def verificar_vm(self, host_uri: str, nombre_vm: str) -> str:
         """Consulta el estado REAL de la instancia en Nova. crear_vm() solo
         confirma que Nova ACEPTO la peticion (202); la VM se termina de
@@ -1030,6 +1072,28 @@ class SesionSimulada:
         if ruta.startswith("/v2.1/servers/") and ruta.endswith("/remote-consoles") and metodo == "POST":
             sid = ruta.split("/")[3]
             return _Resp(200, {"remote_console": {"url": f"http://localhost:56080/vnc_auto.html?path={sid}"}})
+        # Edición en vivo (13-nov): conectar/desconectar una interfaz de una
+        # instancia ya ACTIVE. Van ANTES de los genéricos de abajo porque
+        # también empiezan con "/v2.1/servers/" (si no, "DELETE .../servers/
+        # {id}/os-interface/{port}" se confundiría con un borrado de servidor).
+        if (ruta.startswith("/v2.1/servers/") and ruta.endswith("/os-interface") and metodo == "POST"):
+            sid = ruta.split("/")[3]
+            if sid not in self.servidores:
+                return _Resp(404)
+            port_id = json["interfaceAttachment"]["port_id"]
+            self.servidores[sid]["networks"].append({"port": port_id})
+            if port_id in self.puertos:
+                self.puertos[port_id]["device_id"] = sid
+            return _Resp(200, {"interfaceAttachment": {"port_id": port_id}})
+        if ("/os-interface/" in ruta and ruta.startswith("/v2.1/servers/") and metodo == "DELETE"):
+            partes = ruta.split("/")
+            sid, port_id = partes[3], partes[-1]
+            if sid in self.servidores:
+                self.servidores[sid]["networks"] = [
+                    n for n in self.servidores[sid]["networks"] if n["port"] != port_id]
+            if port_id in self.puertos:
+                self.puertos[port_id]["device_id"] = None
+            return _Resp(202)
         if ruta.startswith("/v2.1/servers/") and metodo == "GET":
             sid = ruta.rsplit("/", 1)[1]
             return _Resp(200, {"server": self.servidores[sid]}) if sid in self.servidores else _Resp(404)

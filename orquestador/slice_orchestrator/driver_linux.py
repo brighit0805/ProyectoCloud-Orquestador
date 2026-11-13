@@ -47,6 +47,12 @@ class DriverLinux:
     espera_reintento_s: float = 2.0
     redes_simuladas: set[tuple[str, str]] = field(default_factory=set)
     vms_simuladas: set[tuple[str, str]] = field(default_factory=set)
+    # (host_uri, nombre_vm, nombre_red) -> (vlan_id, mac) de cada interfaz
+    # agregada en vivo (conectar_interfaz/desconectar_interfaz, 13-nov). Se
+    # guarda también en modo REAL porque libvirt exige la MISMA definición
+    # de interfaz (mac/vlan/bridge) para poder desconectarla después.
+    interfaces_conectadas: dict[tuple[str, str, str], tuple[int | None, str | None]] = field(
+        default_factory=dict)
     semillas_simuladas: dict[tuple[str, str], dict[str, str]] = field(default_factory=dict)
     historial: list[tuple[str, str, str]] = field(default_factory=list)
     fallar_en_operacion: int | None = None
@@ -119,6 +125,19 @@ class DriverLinux:
             logger.info("[SIMULADO] eliminar_red host=%s red=%s", host_uri, nombre_red)
 
     # ------------------------------------------------------------------ XML
+    @staticmethod
+    def _interfaz_xml(vlan: int | None, mac: str | None, bridge: str) -> str:
+        """XML libvirt de una interfaz de red sobre el bridge OVS del
+        worker. Factorizado (13-nov) para que lo use tanto la definición
+        inicial de la VM (``_xml_vm``) como conectar/desconectar_interfaz en
+        caliente -- libvirt exige la MISMA definición para poder
+        desconectar después una interfaz que se conectó así."""
+        etiqueta = f"<vlan><tag id='{vlan}'/></vlan>" if vlan is not None else ""
+        m = f"<mac address='{mac}'/>" if mac else ""
+        return (f"<interface type='bridge'>{m}<source bridge='{bridge}'/>"
+                f"<virtualport type='openvswitch'/>{etiqueta}"
+                f"<model type='virtio'/></interface>")
+
     def _xml_vm(self, nombre_vm: str, vcpu: int, ram_mb: int,
                 volumen: str, redes: list[tuple[str, int]],
                 bridge: str | None = None,
@@ -129,15 +148,11 @@ class DriverLinux:
                 mac_acceso: str | None = None,
                 red_libvirt: str | None = None) -> str:
         bridge = bridge or self.bridge_provider
-        macs = macs or []
 
         def itf(vlan: int | None, mac: str | None) -> str:
-            etiqueta = f"<vlan><tag id='{vlan}'/></vlan>" if vlan is not None else ""
-            m = f"<mac address='{mac}'/>" if mac else ""
-            return (f"<interface type='bridge'>{m}<source bridge='{bridge}'/>"
-                    f"<virtualport type='openvswitch'/>{etiqueta}"
-                    f"<model type='virtio'/></interface>")
+            return self._interfaz_xml(vlan, mac, bridge)
 
+        macs = macs or []
         interfaces = [itf(vlan_id, macs[i] if i < len(macs) else None)
                       for i, (_, vlan_id) in enumerate(redes)]
         if con_acceso:
@@ -306,6 +321,58 @@ class DriverLinux:
                     pool.storageVolLookupByName(vol).delete(0)
                 except libvirt.libvirtError:
                     pass          # ya no existe: la operación es idempotente
+        finally:
+            conn.close()
+
+    # ------------------------------------------ edición en vivo (13-nov)
+    def conectar_interfaz(self, host_uri: str, nombre_vm: str, nombre_red: str,
+                          vlan_id: int, mac: str | None = None, ip: str | None = None) -> None:
+        """Agrega una interfaz a una VM YA CORRIENDO, sin recrearla (edición
+        en vivo de un slice ACTIVO). ``nombre_red`` debe existir de antemano
+        (``crear_red()``). ``ip`` no se usa aquí: a diferencia de OpenStack
+        (donde la IP se fija en el puerto de Neutron), en libvirt la IP la
+        configura la propia VM (cloud-init/DHCP), no la interfaz de red."""
+        self._registrar("conectar_interfaz", host_uri, f"{nombre_vm}:{nombre_red}")
+        clave = (host_uri, nombre_vm, nombre_red)
+        if self.modo == ModoDriver.SIMULADO:
+            self.interfaces_conectadas[clave] = (vlan_id, mac)
+            logger.info("[SIMULADO] conectar_interfaz vm=%s red=%s vlan=%s", nombre_vm, nombre_red, vlan_id)
+            return
+
+        libvirt = self._libvirt()
+        conn = self._conectar(host_uri)
+        try:
+            dom = conn.lookupByName(nombre_vm)
+            xml = self._interfaz_xml(vlan_id, mac, self._bridge_para(host_uri))
+            dom.attachDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE | libvirt.VIR_DOMAIN_AFFECT_CONFIG)
+            self.interfaces_conectadas[clave] = (vlan_id, mac)
+        finally:
+            conn.close()
+
+    def desconectar_interfaz(self, host_uri: str, nombre_vm: str, nombre_red: str) -> None:
+        """Inversa de ``conectar_interfaz``. Idempotente: no falla si la
+        interfaz (o la VM) ya no existen."""
+        self._registrar("desconectar_interfaz", host_uri, f"{nombre_vm}:{nombre_red}")
+        clave = (host_uri, nombre_vm, nombre_red)
+        if self.modo == ModoDriver.SIMULADO:
+            self.interfaces_conectadas.pop(clave, None)
+            logger.info("[SIMULADO] desconectar_interfaz vm=%s red=%s", nombre_vm, nombre_red)
+            return
+
+        vlan_id, mac = self.interfaces_conectadas.get(clave, (None, None))
+        libvirt = self._libvirt()
+        conn = self._conectar(host_uri)
+        try:
+            try:
+                dom = conn.lookupByName(nombre_vm)
+            except libvirt.libvirtError:
+                return      # la VM ya no existe: nada que desconectar
+            xml = self._interfaz_xml(vlan_id, mac, self._bridge_para(host_uri))
+            try:
+                dom.detachDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE | libvirt.VIR_DOMAIN_AFFECT_CONFIG)
+            except libvirt.libvirtError:
+                pass        # ya estaba desconectada: operación idempotente
+            self.interfaces_conectadas.pop(clave, None)
         finally:
             conn.close()
 

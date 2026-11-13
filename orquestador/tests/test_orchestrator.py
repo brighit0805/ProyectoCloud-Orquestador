@@ -1,9 +1,17 @@
+import copy
 import unittest
 
+from slice_orchestrator import composicion
 from slice_orchestrator.driver_linux import DriverLinux
 from slice_orchestrator.models import Host, EstadoSlice, TipoTopologia
 from slice_orchestrator.network_manager import VLANAllocator
-from slice_orchestrator.orchestrator import DespliegueFallidoError, desplegar_slice, eliminar_slice
+from slice_orchestrator.orchestrator import (
+    DespliegueFallidoError,
+    EdicionEnVivoError,
+    desplegar_slice,
+    editar_slice_desplegado,
+    eliminar_slice,
+)
 from slice_orchestrator.topology_manager import construir_topologia
 from slice_orchestrator.vm_placement import EstrategiaPlacement
 
@@ -116,6 +124,83 @@ class PruebasOrquestador(unittest.TestCase):
         )
         self.assertEqual(slc.estado, EstadoSlice.ACTIVO)
         self.assertGreaterEqual(driver.llamadas_descubrir_hosts, 1)
+
+
+class PruebasEdicionEnVivo(unittest.TestCase):
+    """editar_slice_desplegado (13-nov): reconciliación incremental sobre un
+    slice ya ACTIVO -- solo se crea/conecta lo agregado y se borra/desconecta
+    lo quitado, sin tumbar lo que no cambió."""
+
+    def _slice_lineal(self, n=3):
+        hosts = inventario()
+        driver = DriverLinux()
+        vlans = VLANAllocator(3000, 3010)
+        slc = desplegar_slice(
+            "ev", "ev", "u", TipoTopologia.LINEAL, n, hosts, "az-lab",
+            driver=driver, vlan_allocator=vlans,
+        )
+        return slc, hosts, driver, vlans
+
+    def test_agrega_nodo_y_enlace_sin_tocar_lo_existente(self):
+        slc, hosts, driver, vlans = self._slice_lineal(3)
+        vms_antes = set(driver.vms_simuladas)
+        redes_antes = set(driver.redes_simuladas)
+        nuevo = copy.deepcopy(slc)
+        n3 = composicion.agregar_nodo(nuevo)
+        composicion.agregar_enlace(nuevo, nuevo.nodos[-2].id, n3.id)   # cuelga del último viejo
+
+        resultado = editar_slice_desplegado(slc, nuevo, hosts, driver, vlans)
+
+        self.assertEqual(resultado.estado, EstadoSlice.ACTIVO)
+        self.assertEqual(len(resultado.nodos), 4)
+        self.assertEqual(len(resultado.enlaces), 3)
+        # Las VMs/redes que ya existían siguen intactas (no se recrearon)
+        self.assertTrue(vms_antes.issubset(driver.vms_simuladas))
+        self.assertTrue(redes_antes.issubset(driver.redes_simuladas))
+        # Y hay una VM nueva de más, y la red del enlace nuevo quedó creada
+        # (en 1 o 2 hosts según en cuál(es) caiga cada extremo)
+        self.assertEqual(len(driver.vms_simuladas), len(vms_antes) + 1)
+        nombre_red_nuevo = resultado.enlaces[-1].nombre_red
+        self.assertTrue(any(nombre == nombre_red_nuevo for _, nombre in driver.redes_simuladas))
+        self.assertGreater(len(driver.redes_simuladas), len(redes_antes))
+        nodo_nuevo = resultado.nodo(n3.id)
+        self.assertIsNotNone(nodo_nuevo.host_id)
+        eliminar_slice(resultado, hosts, driver, vlans)
+
+    def test_quita_nodo_y_enlace_sin_tocar_lo_que_sobrevive(self):
+        slc, hosts, driver, vlans = self._slice_lineal(3)
+        vcpu_antes = sum(h.vcpu_usados for h in hosts)
+        nuevo = copy.deepcopy(slc)
+        extremo = nuevo.nodos[-1]                      # último nodo de la cadena lineal
+        composicion.eliminar_nodo(nuevo, extremo.id)    # se lleva su único enlace
+
+        resultado = editar_slice_desplegado(slc, nuevo, hosts, driver, vlans)
+
+        self.assertEqual(resultado.estado, EstadoSlice.ACTIVO)
+        self.assertEqual(len(resultado.nodos), 2)
+        self.assertEqual(len(resultado.enlaces), 1)
+        self.assertEqual(sum(h.vcpu_usados for h in hosts), vcpu_antes - extremo.vcpu)
+        self.assertFalse(any(nombre == extremo.nombre for _, nombre in driver.vms_simuladas))
+        eliminar_slice(resultado, hosts, driver, vlans)
+
+    def test_fallo_al_agregar_revierte_solo_lo_agregado(self):
+        slc, hosts, driver, vlans = self._slice_lineal(3)
+        vms_antes = set(driver.vms_simuladas)
+        redes_antes = set(driver.redes_simuladas)
+        vcpu_antes = sum(h.vcpu_usados for h in hosts)
+        nuevo = copy.deepcopy(slc)
+        n3 = composicion.agregar_nodo(nuevo)
+        composicion.agregar_enlace(nuevo, nuevo.nodos[-2].id, n3.id)
+
+        driver.fallar_en_operacion = driver._numero_operacion + 1  # falla la próxima operación (crear_red)
+        with self.assertRaises(EdicionEnVivoError):
+            editar_slice_desplegado(slc, nuevo, hosts, driver, vlans)
+
+        # Nada de lo que ya existía se tocó, y no quedó huérfano lo agregado
+        self.assertEqual(driver.vms_simuladas, vms_antes)
+        self.assertEqual(driver.redes_simuladas, redes_antes)
+        self.assertEqual(sum(h.vcpu_usados for h in hosts), vcpu_antes)
+        eliminar_slice(slc, hosts, driver, vlans)
 
 
 if __name__ == "__main__":

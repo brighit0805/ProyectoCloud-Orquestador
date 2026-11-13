@@ -4,9 +4,10 @@ Verifican el flujo de peticiones (Keystone -> Neutron -> Nova), la idempotencia,
 los reintentos y el rollback. NO prueban el clúster real: eso se valida aparte.
 """
 
+import copy
 import unittest
 
-from slice_orchestrator import direccionamiento
+from slice_orchestrator import composicion, direccionamiento
 from slice_orchestrator.driver_base import DriverPlataforma
 from slice_orchestrator.driver_linux import DriverLinux
 from slice_orchestrator.driver_openstack import (
@@ -24,6 +25,7 @@ from slice_orchestrator.network_manager import VLANAllocator
 from slice_orchestrator.orchestrator import (
     DespliegueFallidoError,
     desplegar_slice_existente,
+    editar_slice_desplegado,
     eliminar_slice,
 )
 from slice_orchestrator.topology_manager import construir_ex1_topology, construir_topologia
@@ -256,6 +258,67 @@ class TestDespliegueCompleto(unittest.TestCase):
                          ("POST", "/v2.0/networks"), ("POST", "/v2.0/subnets"),
                          ("POST", "/v2.0/ports"), ("POST", "/v2.1/servers")]:
             self.assertIn(esperado, firmas)
+
+
+class TestEdicionEnVivo(unittest.TestCase):
+    """editar_slice_desplegado (13-nov) contra DriverOpenStack: usa Nova
+    os-interface + Neutron para conectar/desconectar una interfaz de una VM
+    YA CORRIENDO, sin recrearla."""
+
+    def test_conectar_y_desconectar_interfaz_directo(self):
+        d = driver_simulado()
+        slc, hosts = desplegar(anillo3(), d)
+        sim = d.sesion
+        nodo = slc.nodos[0]
+        host_uri = f"nova:{nodo.host_id}"
+        nombre_red_nueva = f"br-{slc.id}-vivo-vlan9999"
+        d.crear_red(host_uri, nombre_red_nueva, 9999)      # red nueva, sin puerto todavía
+        puertos_antes = len(sim.puertos)
+        puerto_id = d.conectar_interfaz(
+            host_uri, nodo.nombre, nombre_red_nueva, 9999,
+            mac="52:54:00:aa:bb:cc", ip="10.30.9.9")
+        self.assertEqual(len(sim.puertos), puertos_antes + 1)
+        sid = next(s for s, srv in sim.servidores.items() if srv["name"] == nodo.nombre)
+        self.assertIn(puerto_id, {n["port"] for n in sim.servidores[sid]["networks"]})
+
+        d.desconectar_interfaz(host_uri, nodo.nombre, nombre_red_nueva)
+        self.assertEqual(len(sim.puertos), puertos_antes)
+        self.assertNotIn(puerto_id, {n["port"] for n in sim.servidores[sid]["networks"]})
+        d.eliminar_red(host_uri, nombre_red_nueva)
+        eliminar_slice(slc, hosts, d, VLANAllocator())
+
+    def test_agrega_nodo_en_vivo_crea_solo_lo_nuevo(self):
+        d = driver_simulado()
+        slc, hosts = desplegar(anillo3(), d)
+        sim = d.sesion
+        servidores_antes = set(sim.servidores)
+        nuevo = copy.deepcopy(slc)
+        n3 = composicion.agregar_nodo(nuevo)
+        composicion.agregar_enlace(nuevo, nuevo.nodos[0].id, n3.id)
+
+        resultado = editar_slice_desplegado(slc, nuevo, hosts, d, VLANAllocator())
+
+        self.assertEqual(resultado.estado, EstadoSlice.ACTIVO)
+        self.assertEqual(len(sim.servidores), 4)
+        nuevos_servidores = set(sim.servidores) - servidores_antes
+        self.assertEqual(len(nuevos_servidores), 1)
+        self.assertEqual(sim.servidores[next(iter(nuevos_servidores))]["name"], n3.nombre)
+        eliminar_slice(resultado, hosts, d, VLANAllocator())
+
+    def test_quita_nodo_en_vivo_borra_solo_lo_quitado(self):
+        d = driver_simulado()
+        slc, hosts = desplegar(anillo3(), d)
+        sim = d.sesion
+        nuevo = copy.deepcopy(slc)
+        quitado = nuevo.nodos[-1]
+        composicion.eliminar_nodo(nuevo, quitado.id)
+
+        resultado = editar_slice_desplegado(slc, nuevo, hosts, d, VLANAllocator())
+
+        self.assertEqual(resultado.estado, EstadoSlice.ACTIVO)
+        self.assertEqual(len(sim.servidores), 2)
+        self.assertNotIn(quitado.nombre, {s["name"] for s in sim.servidores.values()})
+        eliminar_slice(resultado, hosts, d, VLANAllocator())
 
 
 class TestIdempotenciaYErrores(unittest.TestCase):

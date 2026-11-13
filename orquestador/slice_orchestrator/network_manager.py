@@ -53,6 +53,28 @@ class VLANAllocator:
     def liberar(self, slice_id: str) -> None:
         self._reservas.pop(slice_id, None)
 
+    def reservar_una(self, slice_id: str) -> int:
+        """Reserva UNA VLAN adicional para un slice que ya tiene algunas (o
+        ninguna) reservadas, sin tocar las que ya tenía -- a diferencia de
+        ``reservar()``, que exige declarar de antemano la cantidad total y
+        exacta. La usa la edición en vivo de un slice ya ACTIVO (13-nov):
+        agregar un enlace nuevo no debe forzar a recalcular ni revalidar las
+        VLAN de los enlaces que no cambiaron."""
+        ocupadas = {vlan for valores in self._reservas.values() for vlan in valores}
+        libres = [vlan for vlan in range(self.inicio, self.fin + 1) if vlan not in ocupadas]
+        if not libres:
+            raise RuntimeError("No quedan VLAN suficientes en el rango configurado")
+        nueva = libres[0]
+        self._reservas.setdefault(slice_id, []).append(nueva)
+        return nueva
+
+    def liberar_una(self, slice_id: str, vlan_id: int) -> None:
+        """Libera una VLAN puntual de un slice, dejando intactas las demás
+        que ese mismo slice tenga reservadas (edición en vivo: quitar un
+        enlace sin liberar las VLAN de los enlaces que se quedan)."""
+        if slice_id in self._reservas:
+            self._reservas[slice_id] = [v for v in self._reservas[slice_id] if v != vlan_id]
+
     def restaurar(self, slice_id: str, vlans: list[int]) -> None:
         """Marca como ocupadas las VLAN de un slice ya desplegado (al reconstruir
         el estado desde el almacenamiento persistente)."""
