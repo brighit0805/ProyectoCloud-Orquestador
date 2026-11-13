@@ -865,7 +865,12 @@ class DriverOpenStack:
                 self._api("admin", "DELETE", f"{c.neutron}/subnets/{sub['id']}", esperado=(204,), tolerar=(404,))
             self._api("admin", "DELETE", f"{c.neutron}/networks/{red['id']}", esperado=(204,), tolerar=(404,))
         for flavor in reporte["flavors"]:
-            self._api("admin", "DELETE", f"{c.nova}/flavors/{flavor['id']}", esperado=(204,), tolerar=(404,))
+            # A diferencia de 'servers' (que responde 204), la API real de Nova
+            # responde 202 Accepted al borrar un flavor -- confirmado contra el
+            # clúster real de PUCP el 13-nov-2026 (antes asumíamos 204 por
+            # simetría con el resto de borrados, y el clúster real lo rechazó).
+            self._api("admin", "DELETE", f"{c.nova}/flavors/{flavor['id']}",
+                      esperado=(202, 204), tolerar=(404,))
         for proyecto in reporte["proyectos"]:
             self._api("admin", "DELETE", f"{c.keystone}/projects/{proyecto['id']}",
                       esperado=(204,), tolerar=(404,))
@@ -997,7 +1002,9 @@ class SesionSimulada:
             fid = ruta.rsplit("/", 1)[1]
             antes = len(self.flavores)
             self.flavores = [f for f in self.flavores if f["id"] != fid]
-            return _Resp(204) if len(self.flavores) < antes else _Resp(404)
+            # Nova real responde 202 (no 204) al borrar un flavor -- ver
+            # limpiar_residuos(), confirmado contra el clúster real el 13-nov.
+            return _Resp(202) if len(self.flavores) < antes else _Resp(404)
         if ruta == "/v2.1/servers" and metodo == "GET":
             return _Resp(200, {"servers": [{"id": s["id"], "name": s["name"]}
                                             for s in filtrar(self.servidores)]})
