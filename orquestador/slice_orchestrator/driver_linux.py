@@ -186,7 +186,7 @@ class DriverLinux:
             </disk>
             {cdrom}
             {''.join(interfaces)}
-            <graphics type='vnc' port='-1' autoport='yes'/>
+            <serial type='pty'><target port='0'/></serial><console type='pty'><target type='serial' port='0'/></console><graphics type='vnc' port='-1' autoport='yes'/>
           </devices>
         </domain>"""
 
