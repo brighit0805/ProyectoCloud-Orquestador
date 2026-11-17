@@ -4,40 +4,55 @@ config_cluster.py
 Datos reales del clúster del Grupo 2, en UN solo lugar. Si algo cambia en el
 laboratorio, se cambia aquí y no en los scripts.
 
-Los valores marcados con  # CONFIRMAR  son supuestos razonables que alguien
-del grupo debe verificar en el clúster antes del demo.
+Corregido 17-nov: el mapeo original apuntaba a worker1/2/3, que en realidad
+son nodos del clúster OpenStack (confirmado con el doc oficial del curso),
+no los nodos Linux/KVM. Los nodos Linux reales son server1/2/3 (+ server4
+como headnode de scripts). IPs verificadas por VNC (ip -4 -br a) el 17-nov.
 """
 
 USUARIO_SSH = "ubuntu"
 POOL_LIBVIRT = "default"
 
-# worker -> (IP de gestión, bridge OVS)
+# server -> (IP de gestión, bridge)
+# NOTA sobre 'bridge': no hay un bridge OVS real configurado todavía en estos
+# hosts (se verificó con 'ovs-vsctl show' -> vacío). Solo existe 'virbr0', el
+# bridge NAT que libvirt crea por defecto al instalarse -- ese es el que usa
+# MODO_ACCESO="nat_libvirt" (ver config_acceso() abajo) para la salida a
+# Internet de las VMs, y no depende de este campo 'bridge'. Este campo es
+# para las VLANs de los ENLACES entre VMs de un mismo slice (ver VLAN_INICIO/
+# VLAN_FIN) -- sin un bridge OVS real todavía, crear esos enlaces fallará;
+# queda documentado como limitación pendiente, no simulado como si ya funcionara.
 WORKERS = {
-    "worker1": {"ip": "10.0.10.1", "bridge": "br-int"},
-    "worker2": {"ip": "10.0.10.2", "bridge": "ovs1"},
-    "worker3": {"ip": "10.0.10.3", "bridge": "br-int"},
+    "server1": {"ip": "192.168.201.1", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
+    "server2": {"ip": "192.168.201.2", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
+    "server3": {"ip": "192.168.201.3", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
 }
 
-# Imágenes base que deben existir en el pool de CADA worker
+# Imágenes base que deben existir en el pool de CADA server
 IMAGENES_BASE = ["cirros-0.6.2.qcow2", "ubuntu-22.04.qcow2"]
-# Carpeta en server4 con las imágenes base: el orquestador las copia a cada worker al desplegar
+# Carpeta en server4 con las imágenes base: el orquestador las copia a cada server al desplegar
 REPO_IMAGENES = "/home/ubuntu/imagenes-ex1"      # CONFIRMAR: ahí deben estar los dos .qcow2
 ARCHIVO_ESTADO_IMAGENES = "estado_imagenes.json"   # copias que creó el orquestador
 
 # Headnode / gateway
-HEADNODE_IP_EXTERNA = "10.20.11.142"
-HEADNODE_IFACE_EXTERNA = "ens3"       # salida a Internet
-HEADNODE_GW_EXTERNO = "10.20.11.1"
-HEADNODE_IP_INTERNA = "10.0.10.100"   # gateway que verán VM1 y VM3
+# NOTA: estos valores (IP externa, interfaz interna, red interna) NO se usan
+# cuando MODO_ACCESO = "nat_libvirt" (el modo activo, ver abajo) -- están
+# desactualizados (apuntaban a 10.0.10.0/24, que era la red vieja de
+# worker1/2/3). Si algún día se cambia a MODO_ACCESO="headnode", hay que
+# verificarlos de nuevo contra el clúster real antes de usarlos.
+HEADNODE_IP_EXTERNA = "10.20.11.142"   # CONFIRMAR: no usado en modo nat_libvirt
+HEADNODE_IFACE_EXTERNA = "ens3"
+HEADNODE_GW_EXTERNO = "10.20.11.1"     # CONFIRMAR: no usado en modo nat_libvirt
+HEADNODE_IP_INTERNA = "10.0.10.100"    # CONFIRMAR: no usado en modo nat_libvirt
 HEADNODE_IFACE_INTERNA = "ens4"
-RED_INTERNA = "10.0.10.0/24"
+RED_INTERNA = "10.0.10.0/24"           # CONFIRMAR: no usado en modo nat_libvirt
 
-# Red de acceso de VM1 y VM3 (salida a Internet y SSH entrante)
-VLAN_ACCESO = None                    # CONFIRMAR: None = sin etiqueta (la misma red que el headnode)
-IPS_ACCESO = {"vm1": "10.0.10.31", "vm3": "10.0.10.33"}   # CONFIRMAR que estén libres
+# Red de acceso de VM1 y VM3 (solo aplica si MODO_ACCESO = "headnode")
+VLAN_ACCESO = None
+IPS_ACCESO = {"vm1": "10.0.10.31", "vm3": "10.0.10.33"}
 PREFIJO_ACCESO = 24
 
-# VLAN de los enlaces entre VMs (una por enlace)
+# VLAN de los enlaces entre VMs (una por enlace) -- requiere bridge OVS real, ver nota arriba
 VLAN_INICIO, VLAN_FIN = 3000, 3099
 
 
@@ -45,10 +60,11 @@ def uri(worker: str) -> str:
     return f"qemu+ssh://{USUARIO_SSH}@{WORKERS[worker]['ip']}/system"
 
 
-# Interfaz de acceso a Internet de VM1 y VM3 (ver ejecutar_ex1_real.py --acceso)
 # Modo de acceso a Internet de VM1/VM3:
-#   "nat_libvirt": 3.ª NIC en la red NAT 'default' de libvirt del worker (DHCP). No requiere root en el headnode.
-#   "headnode":    NIC en la red interna con IP fija y NAT en el headnode (headnode_nat.sh, requiere root).
+#   "nat_libvirt": NIC en la red NAT 'default' de libvirt del server (DHCP) -- ya confirmada
+#                  real: existe 'virbr0' en server1/2/3. No requiere root en el headnode.
+#   "headnode":    NIC en la red interna con IP fija y NAT en el headnode (requiere root,
+#                  y los valores HEADNODE_* de arriba, hoy sin verificar).
 MODO_ACCESO = "nat_libvirt"
 RED_NAT_LIBVIRT = "default"
 
