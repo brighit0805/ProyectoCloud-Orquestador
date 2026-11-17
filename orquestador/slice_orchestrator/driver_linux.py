@@ -25,6 +25,8 @@ import subprocess
 import tempfile
 import time
 
+from .models import Host
+
 logger = logging.getLogger("driver_linux")
 
 
@@ -63,6 +65,11 @@ class DriverLinux:
     vm_imagen_simulada: dict[tuple[str, str], str] = field(default_factory=dict)
     _creadas_memoria: set[tuple[str, str]] = field(default_factory=set)
     _numero_operacion: int = 0
+    # Inventario de hosts reales que este driver sabe consultar por libvirt
+    # (hallazgo del 13-nov: antes no existía -- el CLI nunca podía activar el
+    # modo REAL porque nada sabía CUÁLES eran los workers ni cómo conectarse).
+    # Solo se usa en modo REAL; en modo SIMULADO queda vacío sin efecto.
+    hosts_conocidos: list[Host] = field(default_factory=list)
 
     # ------------------------------------------------------------ utilidades
     def _registrar(self, accion: str, host_uri: str, recurso: str) -> None:
@@ -486,3 +493,53 @@ class DriverLinux:
             return True
         finally:
             conn.close()
+
+    # ----------------------------------------------------- monitoreo (Lab 7)
+    def descubrir_hosts(self) -> list[Host]:
+        """Lee cuántos vCPU/RAM están REALMENTE en uso en cada host de
+        ``hosts_conocidos``, sumando TODOS los dominios activos de libvirt
+        (no solo los que creó este orquestador -- así el ResourceMonitor ve
+        lo mismo que vería un administrador con 'virsh list').
+
+        Hallazgo del 13-nov: este método no existía. El ResourceMonitor lo
+        necesita (ver scheduler.ProveedorEstado) y, al no encontrarlo,
+        fallaba en silencio y el Scheduler usaba el inventario interno del
+        orquestador en vez de leer libvirt de verdad -- por eso las pruebas
+        con --driver linux hasta hoy habían sido simulación, no validación
+        real, aunque el mensaje de error no era obvio.
+
+        En modo SIMULADO no hay nada externo que leer -- se avisa con un
+        error claro en vez de devolver números inventados; el
+        ResourceMonitor ya sabe caer de vuelta al inventario interno ante
+        cualquier excepción (ver scheduler.ResourceMonitor.refrescar)."""
+        if self.modo == ModoDriver.SIMULADO:
+            raise DriverLinuxError(
+                "descubrir_hosts() solo lee estado real vía libvirt; en modo SIMULADO "
+                "no hay nada externo que leer (el monitor usa el inventario interno)")
+        libvirt = self._libvirt()
+        resultado: list[Host] = []
+        for host in self.hosts_conocidos:
+            conn = self._conectar(host.uri_libvirt)
+            try:
+                vcpu_usados = 0
+                ram_usados_mb = 0
+                for dom_id in conn.listDomainsID():
+                    try:
+                        dom = conn.lookupByID(dom_id)
+                        _estado, _maxmem_kb, memoria_kb, vcpus, _cputime = dom.info()
+                    except libvirt.libvirtError:
+                        continue    # el dominio desapareció entre listar y leer: se ignora
+                    vcpu_usados += vcpus
+                    ram_usados_mb += memoria_kb // 1024
+            finally:
+                conn.close()
+            resultado.append(Host(
+                id=host.id, nombre=host.nombre, uri_libvirt=host.uri_libvirt,
+                capacidad_vcpu=host.capacidad_vcpu, capacidad_ram_mb=host.capacidad_ram_mb,
+                zona_disponibilidad=host.zona_disponibilidad,
+                vcpu_usados=vcpu_usados, ram_usados_mb=ram_usados_mb,
+                capacidad_disco_gb=host.capacidad_disco_gb,
+                activo=host.activo,
+                overcommit_vcpu=host.overcommit_vcpu, overcommit_ram=host.overcommit_ram,
+            ))
+        return resultado

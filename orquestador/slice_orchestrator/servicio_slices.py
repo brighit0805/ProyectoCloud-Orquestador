@@ -237,6 +237,15 @@ class ServicioSlices:
                     f"La imagen '{n.imagen}' de {composicion.clave_de(n)} no está en el catálogo. "
                     "Impórtela primero con 'imagen importar'.")
 
+    def listar_zonas(self) -> list[dict]:
+        """Lista las zonas de disponibilidad reales vistas en los hosts ya
+        descubiertos (self._hosts_base), con los hosts de cada una. Para que
+        el usuario nunca tenga que leer el codigo para saber que pasarle a --zona."""
+        por_zona: dict[str, list[str]] = {}
+        for h in self._hosts_base:
+            por_zona.setdefault(h.zona_disponibilidad, []).append(h.id)
+        return [{"zona": z, "hosts": sorted(hosts)} for z, hosts in sorted(por_zona.items())]
+
     def _validar_zona(self, zona: Any) -> None:
         if zona is None:
             return
@@ -600,6 +609,36 @@ class ServicioSlices:
             self._guardar()
             logger.info("[%s] eliminó %s", usuario, slice_id)
             return {"id": slice_id, "estado": EstadoSlice.ELIMINADO.value}
+
+    # ------------------------------------------------------------------
+    # Operaciones de administración (R1C — solo para el rol 'admin' de la
+    # API de control_acceso.py; nunca expuestas en la CLI de usuario normal).
+    # ------------------------------------------------------------------
+    def listar_todos_slices(self) -> list[dict[str, Any]]:
+        """Como listar_slices(), pero de TODOS los usuarios (uso admin)."""
+        with self._lock:
+            return [{
+                "id": s.id, "nombre": s.nombre, "owner": s.owner,
+                "estado": s.estado.value, "tipo": s.tipo_topologia.value,
+                "nodos": len(s.nodos), "enlaces": len(s.enlaces),
+                "zona": s.zona_disponibilidad,
+            } for s in self._slices.values()]
+
+    def ver_slice_admin(self, slice_id: str) -> dict[str, Any]:
+        """Como ver_slice(), pero sin exigir que el slice sea del admin."""
+        with self._lock:
+            slc = self._slices.get(slice_id)
+            if slc is None:
+                raise NoEncontrado(f"El slice '{slice_id}' no existe")
+            return self.ver_slice(slc.owner, slice_id)
+
+    def eliminar_slice_admin(self, slice_id: str) -> dict[str, Any]:
+        """Como eliminar_slice(), pero sin exigir que el slice sea del admin."""
+        with self._lock:
+            slc = self._slices.get(slice_id)
+            if slc is None:
+                raise NoEncontrado(f"El slice '{slice_id}' no existe")
+            return self.eliminar_slice(slc.owner, slice_id)
 
     # ------------------------------------------------------------------
     # Plantillas (HLD §3.6)

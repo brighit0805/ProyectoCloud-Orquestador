@@ -44,7 +44,44 @@ import os
 import sys
 from typing import Any
 
+from .models import Host
 from .servicio_slices import ErrorServicio, ServicioSlices
+
+
+def _construir_servicio_linux_real(ruta_estado: str) -> ServicioSlices:
+    """Arma un ServicioSlices contra el clúster REAL Linux/KVM (libvirt vía
+    SSH a cada worker), usando las IPs de 'config_cluster.py' (en la raíz de
+    'orquestador/'). Requiere libvirt-python instalado en el headnode y SSH
+    sin contraseña (por llave) hacia cada worker.
+
+    Se activa con ORQ_LINUX_REAL=1 además de --driver linux (o ORQ_DRIVER=
+    linux); sin esa variable, --driver linux sigue siendo el simulado de
+    siempre, para no tocar nada por accidente."""
+    try:
+        import config_cluster as cfg_cluster
+    except ImportError as exc:
+        raise ErrorServicio(
+            "ORQ_LINUX_REAL=1 pide 'config_cluster.py' (debe existir en la carpeta "
+            "'orquestador', al mismo nivel que 'slice_orchestrator/'). No se encontró."
+        ) from exc
+    from .driver_linux import DriverLinux, ModoDriver
+
+    hosts_config = [
+        Host(nombre, nombre, cfg_cluster.uri(nombre), 16, 32768, "az-lab")
+        for nombre in cfg_cluster.WORKERS
+    ]
+    driver = DriverLinux(modo=ModoDriver.REAL, hosts_conocidos=hosts_config,
+                          pool_almacenamiento=getattr(cfg_cluster, "POOL_LIBVIRT", "default"),
+                          repo_imagenes=getattr(cfg_cluster, "REPO_IMAGENES", "imagenes"),
+                          bridges_por_host={cfg_cluster.uri(n): cfg_cluster.WORKERS[n]["bridge"]
+                                            for n in cfg_cluster.WORKERS})
+    try:
+        hosts_reales = driver.descubrir_hosts()
+    except Exception as exc:  # cualquier fallo de red/SSH/libvirt se traduce a un error de CLI limpio
+        raise ErrorServicio(f"No se pudo descubrir el inventario real del clúster Linux: {exc}") from exc
+    print("⚠ Usando el driver Linux REAL -- las operaciones afectan a los workers físicos.",
+          file=sys.stderr)
+    return ServicioSlices(ruta_estado=ruta_estado, hosts=hosts_reales, driver=driver)
 
 
 def _construir_servicio_openstack_real(ruta_estado: str) -> ServicioSlices:
@@ -249,6 +286,13 @@ def _cmd_slice(svc: ServicioSlices, a: argparse.Namespace) -> None:
         _salida(a, d, _mostrar_slice(d))
 
 
+def _cmd_zona(svc: ServicioSlices, a: argparse.Namespace) -> None:
+    if a.sub == "listar":
+        datos = svc.listar_zonas()
+        _salida(a, datos, _tabla([[z["zona"], ", ".join(z["hosts"])] for z in datos],
+                                  ["zona", "hosts"]))
+
+
 def _cmd_recursos(svc: ServicioSlices, a: argparse.Namespace) -> None:
     r = svc.consumo_recursos(a.usuario)
     texto = ["Consumo por host:", _tabla(
@@ -323,6 +367,8 @@ def construir_parser() -> argparse.ArgumentParser:
     sub.add_parser("topologias", help="catálogo de topologías predefinidas")
     sub.add_parser("flavors", help="capacidades de VM disponibles")
     sub.add_parser("recursos", help="consumo de recursos del sistema y de sus slices")
+    z = sub.add_parser("zona", help="zonas de disponibilidad reales del cluster (hosts por zona)").add_subparsers(dest="sub", required=True)
+    z.add_parser("listar", help="lista las zonas detectadas y los hosts de cada una")
 
     s = sub.add_parser("slice", help="ciclo de vida de slices").add_subparsers(dest="sub", required=True)
     c = s.add_parser("crear", help="crear un slice (BORRADOR; con --desplegar también lo despliega)")
@@ -406,6 +452,8 @@ def main(argv: list[str] | None = None, servicio: ServicioSlices | None = None) 
             svc = servicio
         elif args.driver == "openstack":
             svc = _construir_servicio_openstack_real(args.estado)
+        elif args.driver == "linux" and os.environ.get("ORQ_LINUX_REAL"):
+            svc = _construir_servicio_linux_real(args.estado)
         else:
             svc = ServicioSlices(ruta_estado=args.estado)
         necesita_usuario = (args.comando in ("slice", "recursos")
@@ -415,6 +463,7 @@ def main(argv: list[str] | None = None, servicio: ServicioSlices | None = None) 
             raise ErrorServicio("Indique el usuario con --usuario o la variable ORQ_USUARIO")
         {"topologias": _cmd_topologias, "flavors": _cmd_flavors, "slice": _cmd_slice,
          "recursos": _cmd_recursos, "imagen": _cmd_imagen, "consola": _cmd_consola,
+         "zona": _cmd_zona,
          "mantenimiento": _cmd_mantenimiento}[args.comando](svc, args)
         return 0
     except ErrorServicio as exc:
