@@ -54,6 +54,7 @@ from typing import Any, Callable
 
 from . import composicion, direccionamiento, network_manager, serializacion
 from .driver_linux import DriverLinux
+import config_cluster as cfg_cluster
 from .models import (
     CATALOGO_FLAVORS,
     FLAVOR_POR_DEFECTO,
@@ -442,7 +443,8 @@ class ServicioSlices:
                 try:
                     editar_slice_desplegado(
                         slc, trabajo, self._inventario(), self._driver, self._allocator(),
-                        reintentos=1, espera_reintento_s=0.0)
+                        reintentos=1, espera_reintento_s=0.0,
+                config_acceso=cfg_cluster.config_acceso() if getattr(self._driver, 'modo', None) == 'real' else None)
                 except EdicionEnVivoError as exc:
                     logger.error("[%s] edición en vivo de %s falló: %s", usuario, slice_id, exc)
                     raise ErrorServicio(f"No se pudo editar en vivo: {exc}") from None
@@ -555,7 +557,8 @@ class ServicioSlices:
             try:
                 desplegar_slice_existente(slc, self._inventario(), self._driver,
                                           self._allocator(), est, reintentos=1,
-                                          espera_reintento_s=0.0)
+                                          espera_reintento_s=0.0,
+                                       config_acceso=cfg_cluster.config_acceso() if es_driver_real else None)
             except (DespliegueFallidoError, ValueError) as exc:
                 slc.estado = EstadoSlice.ERROR
                 self._guardar()
