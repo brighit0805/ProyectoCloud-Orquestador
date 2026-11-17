@@ -1,0 +1,12 @@
+{
+  "brighit": {
+    "sal": "a513af69b55c077c4a86cdbd3359a1ad",
+    "hash": "5aa3e34e0c37b53e6c189d454a77cbd6afb2658ad29888f0b353fb459d9e7bb6",
+    "rol": "admin"
+  },
+  "prueba": {
+    "sal": "d299ed1795c25265a2194d5a53320191",
+    "hash": "e3bf389ab226b0694edd838e8cc9f8566e95870921b19ae945b643307d438e77",
+    "rol": "usuario"
+  }
+}

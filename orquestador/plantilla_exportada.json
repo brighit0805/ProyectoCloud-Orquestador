@@ -1,0 +1,32 @@
+{
+  "version": "1.0",
+  "nombre_sugerido": "exportar-check",
+  "tipo_topologia": "lineal",
+  "zona_disponibilidad": "nova",
+  "nodos": [
+    {
+      "clave": "vm1",
+      "flavor": "ubuntu",
+      "vcpu": 1,
+      "ram_mb": 512,
+      "disco_gb": 2.2,
+      "imagen": "ubuntu-22.04.qcow2",
+      "acceso_internet": false
+    },
+    {
+      "clave": "vm2",
+      "flavor": "ubuntu",
+      "vcpu": 1,
+      "ram_mb": 512,
+      "disco_gb": 2.2,
+      "imagen": "ubuntu-22.04.qcow2",
+      "acceso_internet": false
+    }
+  ],
+  "enlaces": [
+    [
+      "vm1",
+      "vm2"
+    ]
+  ]
+}
