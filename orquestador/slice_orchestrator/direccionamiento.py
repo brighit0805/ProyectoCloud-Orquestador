@@ -210,7 +210,22 @@ def user_data_cirros(nodo: Nodo, interfaces: list[InterfazEnlace],
     for itf in interfaces:
         l.append(f"poner_ip {itf.mac} {itf.cidr}   # enlace {itf.enlace_id}")
     if acceso and acceso.red_libvirt:
-        l.append('i=$(nombre_if ' + acceso.mac + '); [ -n "$i" ] && udhcpc -i "$i" -n -q   # acceso por DHCP')
+        l.append('i=$(nombre_if ' + acceso.mac + ')')
+        l.append('if [ -n "$i" ]; then')
+        l.append('  ip link set "$i" up')
+        l.append("  cat > /tmp/dhcp-bound.sh << 'SCRIPTEOF'")
+        l.append('#!/bin/sh')
+        l.append('case "$1" in')
+        l.append('  bound|renew)')
+        l.append('    ifconfig "$interface" "$ip" netmask "$subnet"')
+        l.append('    [ -n "$router" ] && ip route replace default via "$router" dev "$interface" 2>/dev/null')
+        l.append('    ;;')
+        l.append('esac')
+        l.append('exit 0')
+        l.append('SCRIPTEOF')
+        l.append('  chmod +x /tmp/dhcp-bound.sh')
+        l.append('  udhcpc -i "$i" -n -q -s /tmp/dhcp-bound.sh')
+        l.append('fi   # acceso por DHCP')
     elif acceso:
         l.append(f"poner_ip {acceso.mac} {acceso.ip}/{acceso.prefijo}   # acceso")
         l.append(f"ip route replace default via {acceso.gateway}")
