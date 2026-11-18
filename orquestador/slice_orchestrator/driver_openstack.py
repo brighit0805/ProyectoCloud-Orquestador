@@ -435,6 +435,29 @@ class DriverOpenStack:
         self._registrar("liberar_imagen", host_uri, imagen)
         return False
 
+    def subir_imagen(self, nombre: str, ruta) -> str:
+        """Sube un archivo qcow2 ya validado (ver ServicioSlices.importar_imagen)
+        a Glance de verdad: crea el registro y luego sube los bytes, y lo deja
+        listo en ``imagen_por_nombre`` para que quede disponible de inmediato al
+        desplegar. Solo tiene sentido contra el driver REAL."""
+        c = self.config
+        token = self._admin()
+        r = self._api("admin", "POST", c.glance + "/images", esperado=(201,),
+                      cuerpo={"name": nombre, "disk_format": "qcow2",
+                              "container_format": "bare", "visibility": "public"})
+        imagen_id = r.json()["id"]
+        with open(ruta, "rb") as f:
+            headers = {"X-Auth-Token": token, "Content-Type": "application/octet-stream"}
+            resp = self._http().request("PUT", f"{c.glance}/images/{imagen_id}/file",
+                                        headers=headers, data=f,
+                                        timeout=max(self.timeout_s, 120))
+        if resp.status_code != 204:
+            raise DriverOpenStackError(
+                f"Glance rechazo la subida de los datos de la imagen '{nombre}' "
+                f"(HTTP {resp.status_code}): {resp.text[:300]}")
+        self.imagen_por_nombre[nombre] = imagen_id
+        return imagen_id
+
     def sincronizar_catalogo_imagenes(self, forzar: bool = False) -> dict[str, str]:
         """Resuelve automáticamente `imagen_por_nombre` consultando Glance, para
         que el usuario final no tenga que conocer de antemano los IDs: por cada

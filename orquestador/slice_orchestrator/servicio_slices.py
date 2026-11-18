@@ -746,6 +746,17 @@ class ServicioSlices:
                 raise ErrorServicio(f"No se pudo leer el archivo: {exc}") from None
             registro = {"nombre": nombre, "origen": str(ruta), "formato": "qcow2",
                         "tamano_bytes": tamano, "sha256": h.hexdigest(), "importada_por": usuario}
+            if getattr(self._driver, "modo", None) == "real" and hasattr(self._driver, "subir_imagen"):
+                try:
+                    imagen_id = self._driver.subir_imagen(nombre, ruta)
+                except Exception as exc:
+                    raise ErrorServicio(
+                        f"La imagen paso la validacion local pero no se pudo subir "
+                        f"a la plataforma real: {exc}") from None
+                registro["subida_a_plataforma"] = True
+                registro["id_plataforma"] = imagen_id
+            else:
+                registro["subida_a_plataforma"] = False
             self._imagenes[nombre] = registro
             self._guardar()
             logger.info("[%s] importó la imagen %s (%d bytes)", usuario, nombre, tamano)
