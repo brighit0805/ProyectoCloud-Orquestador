@@ -315,8 +315,14 @@ def _cmd_imagen(svc: ServicioSlices, a: argparse.Namespace) -> None:
                                  ["imagen", "formato", "bytes", "origen"]))
     else:
         i = svc.importar_imagen(a.usuario, a.nombre, a.origen)
-        _salida(a, i, f"Imagen {i['nombre']} registrada ({i['tamano_bytes']} bytes, sha256 {i['sha256'][:12]}…).\n"
-                      "Recuerde: la copia al repositorio de imágenes del servidor no la hace esta interfaz.")
+        base = (f"Imagen {i['nombre']} registrada ({i['tamano_bytes']} bytes, "
+                f"sha256 {i['sha256'][:12]}…).")
+        if i.get("subida_a_plataforma"):
+            extra = f" Subida a la plataforma real (id {i['id_plataforma']})."
+        else:
+            extra = (" No se subió a la plataforma (driver simulado o sin soporte de subida); "
+                      "solo quedó registrada en el catálogo local.")
+        _salida(a, i, base + extra)
 
 
 def _cmd_mantenimiento(svc: ServicioSlices, a: argparse.Namespace) -> None:
