@@ -45,6 +45,7 @@ import sys
 from typing import Any
 
 from .models import Host
+from .direccionamiento import CREDENCIALES
 from .servicio_slices import ErrorServicio, ServicioSlices
 
 
@@ -191,6 +192,15 @@ def _mostrar_slice(d: dict[str, Any]) -> str:
         sal += ["", "Direcciones de los enlaces:"]
         for n in d["nodos"]:
             sal.append(f"  {n['clave']}: " + ", ".join(f"{i['ip']} (vlan {i['vlan']})" for i in n["interfaces"]))
+    if d["estado"] == "activo":
+        sal += ["", "Acceso a las VMs (login de laboratorio precargado por cloud-init, no es un secreto real):"]
+        for n in d["nodos"]:
+            cred = CREDENCIALES.get(n["flavor"])
+            if cred:
+                usuario, clave = cred
+                sal.append(f"  {n['clave']} ({n['flavor']}): usuario={usuario}  contraseña={clave}")
+            else:
+                sal.append(f"  {n['clave']} ({n['flavor']}): credenciales desconocidas (imagen personalizada)")
     return "\n".join(sal)
 
 

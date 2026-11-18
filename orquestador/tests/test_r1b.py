@@ -731,6 +731,22 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(self.correr("consola", "canjear", token, usuario=None)[0], 1)
         self.assertEqual(self.correr("slice", "eliminar", "slice-001")[0], 0)
 
+    def test_mostrar_slice_imprime_credenciales_tras_desplegar(self):
+        """Regresion del gap real del 18-nov-2026: tras un deploy exitoso no habia
+        forma de que el usuario final supiera el usuario/contraseña de login de
+        sus VMs. Son las credenciales de laboratorio ya publicas en el codigo
+        (direccionamiento.CREDENCIALES), no un secreto nuevo."""
+        c, out, _ = self.correr("slice", "crear", "--nombre", "cred", "--tipo", "lineal", "--nodos", "2",
+                                "--flavor", "vm2=cirros", "--desplegar")
+        self.assertEqual(c, 0)
+        self.assertIn("Acceso a las VMs", out)
+        self.assertIn("vm1 (ubuntu): usuario=ubuntu  contraseña=ubuntu", out)
+        self.assertIn("vm2 (cirros): usuario=cirros  contraseña=gocubsgo", out)
+        # Un BORRADOR (sin desplegar) todavia no tiene nada corriendo: no se muestra.
+        c, out, _ = self.correr("slice", "crear", "--nombre", "borrador", "--tipo", "lineal", "--nodos", "2")
+        self.assertEqual(c, 0)
+        self.assertNotIn("Acceso a las VMs", out)
+
     def test_errores_dan_codigo_1_y_mensaje_claro_sin_traza(self):
         c, _, err = self.correr("slice", "listar", usuario=None)
         self.assertEqual(c, 1)
