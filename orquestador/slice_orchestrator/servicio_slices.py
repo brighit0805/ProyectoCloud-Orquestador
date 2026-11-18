@@ -547,7 +547,7 @@ class ServicioSlices:
             if es_driver_real and slc.zona_disponibilidad is None:
                 raise ErrorServicio(
                     "La zona de disponibilidad es obligatoria para desplegar contra "
-                    "el driver OpenStack real (Lab 7). Indíquela al crear el slice "
+                    "el driver real activo (Lab 7). Indíquela al crear el slice "
                     "(--zona en 'slice crear') o edítelo con 'slice editar --zona "
                     "<zona>' antes de desplegar.")
             problemas = composicion.validar(slc)
