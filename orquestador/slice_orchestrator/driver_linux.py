@@ -389,13 +389,33 @@ class DriverLinux:
         finally:
             conn.close()
 
-        nat = (f"iptables -t nat -C PREROUTING -p tcp --dport {puerto_externo} "
+        # Hallazgo 18-nov-2026: antes esto se mandaba como 'sudo sh -c "iptables ..."',
+        # lo que hace que sudo autorice el comando "sh" (no "iptables") -- un
+        # NOPASSWD en sudoers para /usr/sbin/iptables NUNCA matchea eso, porque
+        # el binario que sudo ve es sh, con iptables como argumento interno de
+        # sh. Confirmado en vivo contra el clúster real: con el NOPASSWD puesto
+        # para iptables, seguía pidiendo terminal para la contraseña. Se cambia
+        # a invocar 'sudo iptables ...' directo (sin sh -c envolviendo el sudo);
+        # el '||'/'&&' de arriba lo sigue evaluando el shell de login remoto
+        # (vía el propio comando de ssh), que no necesita privilegios.
+        nat = (f"sudo iptables -t nat -C PREROUTING -p tcp --dport {puerto_externo} "
                f"-j DNAT --to-destination {ip_vm}:22 2>/dev/null || "
-               f"iptables -t nat -A PREROUTING -p tcp --dport {puerto_externo} "
+               f"sudo iptables -t nat -A PREROUTING -p tcp --dport {puerto_externo} "
                f"-j DNAT --to-destination {ip_vm}:22")
-        fwd = (f"iptables -C FORWARD -p tcp -d {ip_vm} --dport 22 -j ACCEPT 2>/dev/null || "
-               f"iptables -A FORWARD -p tcp -d {ip_vm} --dport 22 -j ACCEPT")
-        self._ejecutar_remoto(host_uri, f"sudo sh -c '{nat}' && sudo sh -c '{fwd}'")
+        # Hallazgo 18-nov-2026 (segunda ronda, mismo despliegue de prueba):
+        # agregar la regla ACCEPT al FINAL de FORWARD (-A) no basta -- libvirt
+        # genera sus propias cadenas (LIBVIRT_FWX/FWI/FWO) y las engancha en
+        # FORWARD ANTES de donde -A agrega la nuestra. LIBVIRT_FWI en particular
+        # sólo deja pasar tráfico RELATED,ESTABLISHED hacia la red NAT y
+        # rechaza (REJECT icmp-port-unreachable) cualquier paquete NUEVO --
+        # exactamente el caso de una conexión SSH entrante. Confirmado en vivo:
+        # con la regla en -A, 'ssh -p <puerto> ...' daba "Connection refused"
+        # aunque la propia VM sí tenía sshd arriba (ssh directo a su IP interna
+        # funcionaba). Se cambia a insertar al INICIO de FORWARD (-I FORWARD 1)
+        # para que nuestra regla se evalúe antes que la de libvirt.
+        fwd = (f"sudo iptables -C FORWARD -p tcp -d {ip_vm} --dport 22 -j ACCEPT 2>/dev/null || "
+               f"sudo iptables -I FORWARD 1 -p tcp -d {ip_vm} --dport 22 -j ACCEPT")
+        self._ejecutar_remoto(host_uri, f"{nat} && {fwd}")
         logger.info("SSH entrante: worker %s puerto %d -> %s:22", host_uri, puerto_externo, ip_vm)
         return ip_vm
 
@@ -405,11 +425,13 @@ class DriverLinux:
         self._registrar("eliminar_ssh_entrante", host_uri, str(puerto_externo))
         if self.modo == ModoDriver.SIMULADO or not ip_vm:
             return
-        nat = (f"iptables -t nat -D PREROUTING -p tcp --dport {puerto_externo} "
+        # Mismo fix que configurar_ssh_entrante: sudo directo sobre iptables,
+        # no envuelto en 'sh -c'.
+        nat = (f"sudo iptables -t nat -D PREROUTING -p tcp --dport {puerto_externo} "
                f"-j DNAT --to-destination {ip_vm}:22 2>/dev/null; true")
-        fwd = f"iptables -D FORWARD -p tcp -d {ip_vm} --dport 22 -j ACCEPT 2>/dev/null; true"
+        fwd = f"sudo iptables -D FORWARD -p tcp -d {ip_vm} --dport 22 -j ACCEPT 2>/dev/null; true"
         try:
-            self._ejecutar_remoto(host_uri, f"sudo sh -c '{nat}'; sudo sh -c '{fwd}'")
+            self._ejecutar_remoto(host_uri, f"{nat}; {fwd}")
         except DriverLinuxError as exc:
             logger.warning("No se pudo limpiar la regla SSH entrante (se ignora): %s", exc)
 
