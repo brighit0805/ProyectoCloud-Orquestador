@@ -217,6 +217,37 @@ class TestDespliegueCompleto(unittest.TestCase):
         con_acceso = [p for p in d.sesion.puertos.values() if p["name"].endswith(":acceso")]
         self.assertGreaterEqual(len(con_acceso), 1)
         self.assertTrue(all(p["network_id"] == "net-external" for p in con_acceso))
+        # R5 (18-nov-2026): el puerto de acceso ya NO va con port_security
+        # desactivado y sin grupo -- debe llevar el security group de SSH.
+        self.assertTrue(all(p["port_security_enabled"] is True for p in con_acceso))
+        self.assertTrue(all(p.get("security_groups") for p in con_acceso))
+
+    def test_puerto_de_acceso_usa_security_group_solo_ssh_y_enlaces_internos_siguen_sin_filtrar(self):
+        """R5: 'Implementa las reglas de seguridad requeridas en los slices en
+        OpenStack' (10 pts). El security group del puerto de acceso debe
+        permitir únicamente SSH (22) entrante, y los puertos de los enlaces
+        internos del slice (VLAN entre VMs) NO deben llevar ese grupo ni
+        port_security activado -- el aislamiento entre slices ya lo dan las
+        VLANs, no es responsabilidad de este security group."""
+        d = driver_simulado()
+        slc = construir_ex1_topology("ex1", "ex1", "grupo2@pucp.edu.pe", "nova")
+        hosts = d.descubrir_hosts()
+        cfg = {"ips": {"vm1": "10.60.110.21", "vm3": "10.60.110.22"}, "prefijo": 24,
+               "gateway": "10.60.110.1", "vlan": None}
+        desplegar_slice_existente(slc, hosts, d, VLANAllocator(),
+                                  EstrategiaPlacement.ROUND_ROBIN, config_acceso=cfg)
+        sim = d.sesion
+        grupos = [g for g in sim.security_groups.values() if g["name"] == "orq-acceso-ssh"]
+        self.assertEqual(len(grupos), 1)
+        sg = grupos[0]
+        reglas = [r for r in sim.security_group_rules.values()
+                  if r["security_group_id"] == sg["id"] and r["direction"] == "ingress"]
+        puertos_tcp = {(r.get("port_range_min"), r.get("port_range_max"))
+                       for r in reglas if r["protocol"] == "tcp"}
+        self.assertEqual(puertos_tcp, {(22, 22)})
+        enlaces = [p for p in sim.puertos.values() if not p["name"].endswith(":acceso")]
+        self.assertTrue(all(p["port_security_enabled"] is False for p in enlaces))
+        self.assertTrue(all(not p.get("security_groups") for p in enlaces))
 
     def test_eliminar_slice_no_deja_recursos_ni_proyecto(self):
         d = driver_simulado()

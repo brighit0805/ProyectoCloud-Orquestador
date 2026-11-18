@@ -597,13 +597,57 @@ class DriverOpenStack:
     def _nombre_puerto(self, nombre_vm: str, destino: str) -> str:
         return f"{nombre_vm}:{destino}"
 
+    def _asegurar_security_group_acceso(self) -> str:
+        """Crea (o reutiliza) el security group del puerto de acceso a
+        Internet de cada VM -- R5: "Implementa las reglas de seguridad
+        requeridas en los slices en OpenStack" (10 pts).
+
+        Hallazgo 18-nov-2026: antes el puerto de acceso se creaba con
+        port_security_enabled=False y SIN grupo -- eso no es "faltan
+        reglas", es peor: deja TODOS los puertos de la VM abiertos al
+        exterior, no solo SSH. La regla mínima que pide la rúbrica y que
+        ya promete el propio diseño (Entregable2_Arquitectura, Network
+        Manager: "reglas MÍNIMAS de seguridad") es: solo SSH (22) entrante,
+        todo lo demás bloqueado por defecto (Neutron deniega lo no
+        listado), egress sin restricción (ya cubierto por las reglas
+        egress que Neutron agrega solas a todo security group nuevo).
+        No se restringe el tráfico entre VMs del mismo slice porque eso ya
+        lo resuelven las VLANs (primer criterio de R5, separado) -- este
+        grupo solo regula qué entra desde fuera del cluster."""
+        nombre = "orq-acceso-ssh"
+        sg_id = self._buscar("security-groups", nombre, "security-groups")
+        if sg_id:
+            return sg_id
+        c = self.config
+        r = self._api("admin", "POST", c.neutron + "/security-groups", esperado=(201,),
+                      cuerpo={"security_group": {
+                          "name": nombre, "project_id": self.proyecto_id,
+                          "description": "R5: solo SSH entrante (22); egress sin restriccion"}})
+        sg_id = r.json()["security_group"]["id"]
+        reglas_ingress = (
+            {"protocol": "tcp", "port_range_min": 22, "port_range_max": 22},
+            {"protocol": "icmp"},
+        )
+        for regla in reglas_ingress:
+            cuerpo = {"security_group_id": sg_id, "direction": "ingress",
+                      "ethertype": "IPv4", **regla}
+            self._api("admin", "POST", c.neutron + "/security-group-rules",
+                      esperado=(201,), tolerar=(409,), cuerpo={"security_group_rule": cuerpo})
+        logger.info("[OPENSTACK] security group de acceso SSH asegurado: %s (%s)", nombre, sg_id)
+        return sg_id
+
     def _crear_puerto(self, nombre: str, red_id: str, mac: str | None, ip: str | None,
-                      subred_id: str | None) -> str:
+                      subred_id: str | None, security_group_ids: list[str] | None = None) -> str:
         existente = self._buscar("ports", nombre, "ports")
         if existente:
             return existente
         puerto: dict[str, Any] = {"name": nombre, "network_id": red_id, "project_id": self.proyecto_id,
-                                  "tenant_id": self.proyecto_id, "port_security_enabled": False}
+                                  "tenant_id": self.proyecto_id}
+        if security_group_ids:
+            puerto["port_security_enabled"] = True
+            puerto["security_groups"] = security_group_ids
+        else:
+            puerto["port_security_enabled"] = False
         if mac:
             puerto["mac_address"] = mac
         if ip and subred_id:
@@ -639,8 +683,10 @@ class DriverOpenStack:
                 self._ips_puerto.get((nombre_vm, nombre_red)), self._subredes.get(nombre_red)))
         if acceso is not None:
             ext_id = self._buscar_red_externa()
+            sg_acceso = self._asegurar_security_group_acceso()
             puertos.append(self._crear_puerto(self._nombre_puerto(nombre_vm, "acceso"), ext_id,
-                                              acceso.get("mac"), None, None))
+                                              acceso.get("mac"), None, None,
+                                              security_group_ids=[sg_acceso]))
 
         zona, host = parsear_ubicacion(host_uri)
         servidor: dict[str, Any] = {
@@ -994,6 +1040,8 @@ class SesionSimulada:
         self.redes: dict[str, dict] = {}
         self.subredes: dict[str, dict] = {}
         self.puertos: dict[str, dict] = {}
+        self.security_groups: dict[str, dict] = {}
+        self.security_group_rules: dict[str, dict] = {}
         self.servidores: dict[str, dict] = {}
         self.roles: set[tuple[str, str, str]] = set()
         self.fallos_http: dict[tuple[str, str], list[int]] = {}   # (método, fragmento de ruta) -> códigos a devolver
@@ -1064,7 +1112,10 @@ class SesionSimulada:
         # ---- Neutron
         for nombre, coleccion, clave in (("networks", self.redes, "network"),
                                          ("subnets", self.subredes, "subnet"),
-                                         ("ports", self.puertos, "port")):
+                                         ("ports", self.puertos, "port"),
+                                         ("security-groups", self.security_groups, "security_group"),
+                                         ("security-group-rules", self.security_group_rules,
+                                          "security_group_rule")):
             base = f"/v2.0/{nombre}"
             if ruta == base and metodo == "GET":
                 return _Resp(200, {nombre: filtrar(coleccion)})
