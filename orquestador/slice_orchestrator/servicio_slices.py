@@ -728,8 +728,12 @@ class ServicioSlices:
         with self._lock:
             if not isinstance(nombre, str) or not _RE_NOMBRE_IMAGEN.match(nombre):
                 raise ErrorServicio("Nombre de imagen inválido: use letras, números, . _ - y termine en .qcow2")
-            if nombre in self._imagenes:
+            existente = self._imagenes.get(nombre)
+            if existente is not None and existente.get("origen") != "catalogo":
                 raise ErrorServicio(f"La imagen '{nombre}' ya está en el catálogo")
+            # Si "existente" es solo el placeholder que el catalogo precarga desde el
+            # nombre de imagen de un flavor (origen == "catalogo"), nunca se subio de
+            # verdad -- se permite importar/sobrescribir con el archivo real.
             ruta = Path(str(origen))
             if not ruta.is_file():
                 raise ErrorServicio(f"No se encontró el archivo de origen: {origen}")

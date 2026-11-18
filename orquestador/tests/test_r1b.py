@@ -549,11 +549,29 @@ class TestImagenes(unittest.TestCase):
         casos = [("sin-extension", self.archivo("a.qcow2")), ("../mala.qcow2", self.archivo("b.qcow2")),
                  ("a b.qcow2", self.archivo("c.qcow2")), ("nofirma.qcow2", self.archivo("d.qcow2", b"MZ\x90\0")),
                  ("noexiste.qcow2", os.path.join(self.tmp.name, "no-esta")),
-                 ("dir.qcow2", self.tmp.name), ("ubuntu-22.04.qcow2", self.archivo("e.qcow2"))]
+                 ("dir.qcow2", self.tmp.name)]
         for nombre, origen in casos:
             with self.assertRaises(ErrorServicio, msg=nombre):
                 self.svc.importar_imagen("ana", nombre, origen)
         self.assertEqual(len(self.svc.listar_imagenes()), 2)
+
+    def test_importar_sobre_placeholder_de_flavor_reemplaza_el_placeholder(self):
+        """Regresion del hallazgo real del 18-nov-2026: 'ubuntu-22.04.qcow2' y
+        'cirros-0.6.2.qcow2' quedan precargados en el catalogo solo porque son
+        el nombre de imagen de un flavor (origen == "catalogo"), sin haberse
+        subido nunca de verdad. Un usuario real que intenta importar su propio
+        archivo con ese nombre no deberia chocar con ese placeholder -- si lo
+        hace, el sistema debe reemplazarlo con la imagen real importada."""
+        antes = self.svc.listar_imagenes()
+        placeholder = next(i for i in antes if i["nombre"] == "ubuntu-22.04.qcow2")
+        self.assertEqual(placeholder["origen"], "catalogo")
+
+        real = self.svc.importar_imagen("ana", "ubuntu-22.04.qcow2", self.archivo())
+        self.assertNotEqual(real["origen"], "catalogo")
+        self.assertEqual(real["importada_por"], "ana")
+
+        with self.assertRaises(ErrorServicio):
+            self.svc.importar_imagen("ana", "ubuntu-22.04.qcow2", self.archivo())
 
 
 # ---------------------------------------------------------------------------
