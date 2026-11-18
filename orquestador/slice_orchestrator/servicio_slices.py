@@ -593,6 +593,7 @@ class ServicioSlices:
                     "vcpu": n.vcpu, "ram_mb": n.ram_mb, "disco_gb": n.disco_gb,
                     "imagen": n.imagen, "host": n.host_id, "estado": n.estado,
                     "acceso_internet": n.acceso_internet, "interfaces": interfaces,
+                    "puerto_ssh": n.puerto_ssh, "ip_acceso": n.ip_acceso,
                 })
             claves = {n.id: composicion.clave_de(n) for n in slc.nodos}
             enlaces = [{"id": e.id, "a": claves.get(e.nodo_origen), "b": claves.get(e.nodo_destino),

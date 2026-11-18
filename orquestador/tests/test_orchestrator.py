@@ -203,5 +203,39 @@ class PruebasEdicionEnVivo(unittest.TestCase):
         eliminar_slice(slc, hosts, driver, vlans)
 
 
+class TestSSHEntranteR5(unittest.TestCase):
+    """SSH entrante (R5, 18-nov): solo las partes que no requieren libvirt real.
+    El camino real (DNAT por iptables + lease DHCP de libvirt) solo se puede
+    validar contra el cluster real de Brighit, no aquí."""
+
+    def test_puerto_determinista_es_reproducible_y_en_rango(self):
+        from slice_orchestrator.orchestrator import _puerto_ssh_determinista
+        p1 = _puerto_ssh_determinista("slice-100", "nodo-1")
+        p2 = _puerto_ssh_determinista("slice-100", "nodo-1")
+        p3 = _puerto_ssh_determinista("slice-100", "nodo-2")
+        self.assertEqual(p1, p2)
+        self.assertNotEqual(p1, p3)
+        for p in (p1, p3):
+            self.assertTrue(20000 <= p < 22000)
+
+    def test_driver_linux_simulado_no_hace_nada_real(self):
+        driver = DriverLinux()  # modo SIMULADO por defecto
+        ip = driver.configurar_ssh_entrante("qemu+ssh://ubuntu@host/system", "default",
+                                            "52:54:00:00:00:01", 20001)
+        self.assertEqual(ip, "0.0.0.0")
+        # No debe lanzar nada, aunque no haya conexión real que limpiar:
+        driver.eliminar_ssh_entrante("qemu+ssh://ubuntu@host/system", 20001, None)
+
+    def test_no_se_configura_ssh_sin_acceso_internet_ni_driver_real(self):
+        """Un deploy simulado normal (sin --internet, o sin config_acceso real)
+        no debe tocar nada de SSH entrante: los nodos quedan con puerto_ssh=None."""
+        from slice_orchestrator.orchestrator import _configurar_ssh_si_corresponde
+        from slice_orchestrator.models import Nodo
+        nodo = Nodo(id="n1", nombre="vm1", acceso_internet=True)
+        _configurar_ssh_si_corresponde(DriverLinux(), None, nodo, None, "qemu+ssh://x/system")
+        self.assertIsNone(nodo.puerto_ssh)
+        self.assertIsNone(nodo.ip_acceso)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -139,3 +139,53 @@ class TestAccesoNatLibvirt(unittest.TestCase):
                                     mac_acceso=nic.mac, red_libvirt="default")
         self.assertIn("<interface type='network'>", xml)
         self.assertIn("<source network='default'/>", xml)
+
+
+class TestAjusteMTUAccesoR5(unittest.TestCase):
+    """Regresión del 18-nov-2026: la red externa de OpenStack tiene un PMTU
+    roto más allá de ~1400 bytes (confirmado con 'ping -M do' contra el
+    cluster real), lo que cuelga el handshake de SSH entrante para siempre
+    aunque TCP conecte bien. Se baja el MTU de la interfaz de acceso a mano
+    en el cloud-init, identificándola por su MAC (el nombre ensX/eth0 varía).
+    config_acceso() usa el mismo 'red_libvirt' para Linux real y OpenStack
+    real (ver config_cluster.py), así que ambos flavors deben llevar el
+    ajuste en esa rama."""
+
+    def test_ubuntu_incluye_bootcmd_con_mtu_para_la_interfaz_de_acceso(self):
+        from slice_orchestrator.direccionamiento import InterfazAcceso, user_data_ubuntu
+        from slice_orchestrator.models import Nodo
+        nic = InterfazAcceso(mac="52:54:00:aa:bb:cc", red_libvirt="default")
+        nodo = Nodo(id="n1", nombre="vm1", flavor="ubuntu", acceso_internet=True)
+        ud = user_data_ubuntu(nodo, acceso=nic)
+        self.assertIn("bootcmd:", ud)          # corre en CADA arranque, no solo el primero
+        self.assertIn("52:54:00:aa:bb:cc", ud)
+        self.assertIn("mtu 1400", ud)
+
+    def test_ubuntu_sin_acceso_no_lleva_bootcmd_de_mtu(self):
+        from slice_orchestrator.direccionamiento import user_data_ubuntu
+        from slice_orchestrator.models import Nodo
+        nodo = Nodo(id="n1", nombre="vm1", flavor="ubuntu")
+        ud = user_data_ubuntu(nodo, acceso=None)
+        self.assertNotIn("bootcmd", ud)
+        self.assertNotIn("mtu 1400", ud)
+
+    def test_cirros_con_dhcp_de_acceso_tambien_baja_el_mtu(self):
+        from slice_orchestrator.direccionamiento import InterfazAcceso, user_data_cirros
+        from slice_orchestrator.models import Nodo
+        nic = InterfazAcceso(mac="52:54:00:aa:bb:cc", red_libvirt="default")
+        nodo = Nodo(id="n1", nombre="vm1", flavor="cirros", acceso_internet=True)
+        ud = user_data_cirros(nodo, [], acceso=nic)
+        self.assertIn("mtu 1400", ud)
+        # el MTU se fija ANTES de pedir IP por DHCP (udhcpc), no después
+        self.assertLess(ud.index("mtu 1400"), ud.index("udhcpc"))
+
+    def test_archivos_semilla_propaga_el_acceso_al_user_data_de_ubuntu(self):
+        """Regresión directa del bug que motivó esto: archivos_semilla() no
+        le pasaba 'acceso' a user_data_ubuntu(), así que el ajuste de MTU
+        nunca llegaba a la semilla real que sube el driver."""
+        from slice_orchestrator.direccionamiento import InterfazAcceso, archivos_semilla
+        from slice_orchestrator.models import Nodo
+        nic = InterfazAcceso(mac="52:54:00:aa:bb:cc", red_libvirt="default")
+        nodo = Nodo(id="n1", nombre="vm1", flavor="ubuntu", acceso_internet=True)
+        sem = archivos_semilla(nodo, [], acceso=nic)
+        self.assertIn("mtu 1400", sem["user-data"])

@@ -34,6 +34,7 @@ este tipo de falla). DriverLinux no se ve afectado: no implementa
 """
 
 from __future__ import annotations
+import hashlib
 import logging
 import time
 
@@ -228,6 +229,7 @@ def desplegar_slice_existente(
                     driver, host.uri_libvirt, nodo.nombre,
                     f"VM {nodo.nombre} en {host.id}", intentos_verificacion, espera_verificacion_s)
                 nodo.estado = "activo"
+                _configurar_ssh_si_corresponde(driver, slc, nodo, acceso_drv, host.uri_libvirt)
 
     except Exception as exc:
         logger.error("Falló el despliegue del slice %s en el paso %s: %s. Ejecutando rollback...",
@@ -312,6 +314,39 @@ def _interfaz_acceso(slc: Slice, nodo, config: dict | None):
     return nic, {"vlan": config.get("vlan"), "mac": mac}
 
 
+def _puerto_ssh_determinista(slice_id: str, nodo_id: str) -> int:
+    """Puerto del rango 20000-21999 derivado del id del slice+nodo (sin
+    allocator persistido: cada invocación de la CLI es un proceso nuevo, y
+    este cálculo da siempre el mismo puerto para el mismo nodo sin tener que
+    coordinarlo entre procesos). Riesgo de colisión despreciable para la
+    cantidad de slices simultáneos de este laboratorio; si algún día hiciera
+    falta eliminarlo, se reemplaza por un allocator persistido como el de
+    VLAN (network_manager.VLANAllocator)."""
+    h = hashlib.sha256(f"{slice_id}:{nodo_id}".encode()).hexdigest()
+    return 20000 + (int(h, 16) % 2000)
+
+
+def _configurar_ssh_si_corresponde(driver, slc: Slice, nodo, acceso_drv: dict | None,
+                                    host_uri: str) -> None:
+    """Publica el puerto SSH de ``nodo`` si pidió acceso a Internet y el driver
+    activo lo soporta (R5, solo Linux real por ahora -- ver driver_base.py)."""
+    if not nodo.acceso_internet or not acceso_drv or not acceso_drv.get("red_libvirt"):
+        return
+    if not hasattr(driver, "configurar_ssh_entrante"):
+        return
+    puerto = _puerto_ssh_determinista(slc.id, nodo.id)
+    try:
+        ip_vm = driver.configurar_ssh_entrante(
+            host_uri, acceso_drv["red_libvirt"], acceso_drv["mac"], puerto)
+    except Exception as exc:       # noqa: BLE001
+        # No tumba el despliegue: la VM ya está activa y accesible por consola;
+        # el SSH entrante es un extra. Se deja constancia en el log.
+        logger.warning("No se pudo publicar el acceso SSH de %s: %s", nodo.nombre, exc)
+        return
+    nodo.puerto_ssh = puerto
+    nodo.ip_acceso = ip_vm
+
+
 def _liberar_slice_driver(driver, slc: Slice) -> None:
     """Pide al driver (si lo soporta) que libere lo propio del slice, p. ej. el
     proyecto de OpenStack. Un fallo aquí se registra pero no oculta el error original."""
@@ -369,8 +404,15 @@ def eliminar_slice(slc: Slice, hosts: list[Host], driver: DriverLinux | None = N
         if nodo.host_id is None:
             continue
         host = hosts_por_id[nodo.host_id]
+        if nodo.puerto_ssh is not None and hasattr(driver, "eliminar_ssh_entrante"):
+            try:
+                driver.eliminar_ssh_entrante(host.uri_libvirt, nodo.puerto_ssh, nodo.ip_acceso)
+            except Exception as exc:       # noqa: BLE001
+                logger.warning("No se pudo limpiar el acceso SSH de %s: %s", nodo.nombre, exc)
         driver.eliminar_vm(host.uri_libvirt, nodo.nombre)
         nodo.estado = "pendiente"
+        nodo.puerto_ssh = None
+        nodo.ip_acceso = None
 
     for enlace in slc.enlaces:
         if enlace.nombre_red is None:

@@ -145,6 +145,8 @@ class Nodo:
     ip: str | None = None
     flavor: str = FLAVOR_POR_DEFECTO     # nombre del flavor del catálogo
     acceso_internet: bool = False        # salida a Internet y SSH entrante (R5)
+    puerto_ssh: int | None = None        # puerto del worker reenviado por DNAT a esta VM:22 (R5)
+    ip_acceso: str | None = None         # IP que la VM recibió por DHCP en la red de acceso (NAT libvirt)
 
     @classmethod
     def desde_flavor(cls, id: str, nombre: str, flavor: str,

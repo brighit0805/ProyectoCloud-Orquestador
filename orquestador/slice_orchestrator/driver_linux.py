@@ -331,6 +331,88 @@ class DriverLinux:
         finally:
             conn.close()
 
+    # ------------------------------------------------- SSH entrante (R5)
+    @staticmethod
+    def _usuario_y_host(host_uri: str) -> tuple[str, str]:
+        """'qemu+ssh://ubuntu@192.168.201.1/system' -> ('ubuntu', '192.168.201.1')."""
+        sin_esquema = host_uri.split("://", 1)[-1]
+        autoridad = sin_esquema.split("/", 1)[0]
+        usuario, _, host = autoridad.partition("@")
+        if not host:
+            raise DriverLinuxError(f"host_uri sin usuario@host: {host_uri!r}")
+        return usuario, host
+
+    def _ejecutar_remoto(self, host_uri: str, comando: str) -> None:
+        """Corre ``comando`` por SSH real en el worker (no libvirt: iptables no
+        tiene API en libvirt). Falla ruidosamente salvo que el propio comando
+        ya sea idempotente (se arma así en los llamadores)."""
+        usuario, host = self._usuario_y_host(host_uri)
+        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                            f"{usuario}@{host}", comando],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            raise DriverLinuxError(
+                f"No se pudo ejecutar en {host}: {comando!r} -> rc={r.returncode} "
+                f"stderr={r.stderr.strip()}")
+
+    def configurar_ssh_entrante(self, host_uri: str, red_libvirt: str, mac_acceso: str,
+                                 puerto_externo: int, intentos: int = 10,
+                                 espera_s: float = 2.0) -> str:
+        """Publica el puerto 22 de la VM (identificada por la MAC de su NIC de
+        acceso) en ``puerto_externo`` del worker, vía DNAT. Devuelve la IP que
+        la VM recibió por DHCP en la red NAT de libvirt.
+
+        Idempotente: usa -C (check) antes de -A (append) en ambas reglas, así
+        que puede llamarse de nuevo sin duplicar reglas."""
+        self._registrar("configurar_ssh_entrante", host_uri, f"{mac_acceso}:{puerto_externo}")
+        if self.modo == ModoDriver.SIMULADO:
+            logger.info("[SIMULADO] configurar_ssh_entrante host=%s mac=%s puerto=%d",
+                       host_uri, mac_acceso, puerto_externo)
+            return "0.0.0.0"
+
+        conn = self._conectar(host_uri)
+        try:
+            red = conn.networkLookupByName(red_libvirt)
+            ip_vm: str | None = None
+            for _ in range(max(1, intentos)):
+                for lease in red.DHCPLeases():
+                    if lease.get("mac", "").lower() == mac_acceso.lower():
+                        ip_vm = lease.get("ipaddr")
+                        break
+                if ip_vm:
+                    break
+                time.sleep(espera_s)
+            if not ip_vm:
+                raise DriverLinuxError(
+                    f"La VM con MAC {mac_acceso} no tiene (todavía) IP por DHCP en "
+                    f"la red '{red_libvirt}' -- no se pudo publicar el puerto SSH")
+        finally:
+            conn.close()
+
+        nat = (f"iptables -t nat -C PREROUTING -p tcp --dport {puerto_externo} "
+               f"-j DNAT --to-destination {ip_vm}:22 2>/dev/null || "
+               f"iptables -t nat -A PREROUTING -p tcp --dport {puerto_externo} "
+               f"-j DNAT --to-destination {ip_vm}:22")
+        fwd = (f"iptables -C FORWARD -p tcp -d {ip_vm} --dport 22 -j ACCEPT 2>/dev/null || "
+               f"iptables -A FORWARD -p tcp -d {ip_vm} --dport 22 -j ACCEPT")
+        self._ejecutar_remoto(host_uri, f"sudo sh -c '{nat}' && sudo sh -c '{fwd}'")
+        logger.info("SSH entrante: worker %s puerto %d -> %s:22", host_uri, puerto_externo, ip_vm)
+        return ip_vm
+
+    def eliminar_ssh_entrante(self, host_uri: str, puerto_externo: int, ip_vm: str | None) -> None:
+        """Inversa de ``configurar_ssh_entrante``. Idempotente: si la regla ya
+        no existe (p. ej. la VM nunca llegó a tener IP), no falla."""
+        self._registrar("eliminar_ssh_entrante", host_uri, str(puerto_externo))
+        if self.modo == ModoDriver.SIMULADO or not ip_vm:
+            return
+        nat = (f"iptables -t nat -D PREROUTING -p tcp --dport {puerto_externo} "
+               f"-j DNAT --to-destination {ip_vm}:22 2>/dev/null; true")
+        fwd = f"iptables -D FORWARD -p tcp -d {ip_vm} --dport 22 -j ACCEPT 2>/dev/null; true"
+        try:
+            self._ejecutar_remoto(host_uri, f"sudo sh -c '{nat}'; sudo sh -c '{fwd}'")
+        except DriverLinuxError as exc:
+            logger.warning("No se pudo limpiar la regla SSH entrante (se ignora): %s", exc)
+
     # ------------------------------------------ edición en vivo (13-nov)
     def conectar_interfaz(self, host_uri: str, nombre_vm: str, nombre_red: str,
                           vlan_id: int, mac: str | None = None, ip: str | None = None) -> None:

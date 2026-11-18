@@ -34,6 +34,14 @@ Métodos opcionales (los usa el orquestador solo si el driver los tiene):
         inversa de ``conectar_interfaz``: quita la interfaz de una VM ya
         corriendo sin recrearla. Idempotente (no falla si la interfaz ya no
         está, p. ej. si la VM se borró por otro lado).
+    configurar_ssh_entrante(host_uri, red_libvirt, mac_acceso, puerto_externo) -> str
+        publica el puerto 22 de la VM en ``puerto_externo`` del worker (DNAT),
+        para acceso SSH desde fuera del cluster (R5). Devuelve la IP que la VM
+        recibió por DHCP en la red de acceso. Solo lo implementa DriverLinux
+        (modo NAT de libvirt); DriverOpenStack queda pendiente (requiere IP
+        flotante + reglas de seguridad, bloqueado por permiso del profesor).
+    eliminar_ssh_entrante(host_uri, puerto_externo, ip_vm)
+        inversa de ``configurar_ssh_entrante``. Idempotente.
 """
 
 from __future__ import annotations

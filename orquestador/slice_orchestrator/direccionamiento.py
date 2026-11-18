@@ -179,7 +179,8 @@ def network_config_ubuntu(interfaces: list[InterfazEnlace],
     return "\n".join(l) + "\n"
 
 
-def user_data_ubuntu(nodo: Nodo, clave_ssh_publica: str | None = None) -> str:
+def user_data_ubuntu(nodo: Nodo, clave_ssh_publica: str | None = None,
+                     acceso: "InterfazAcceso | None" = None) -> str:
     usuario, clave = CREDENCIALES["ubuntu"]
     l = ["#cloud-config",
          f"hostname: {nodo.nombre}",
@@ -194,6 +195,23 @@ def user_data_ubuntu(nodo: Nodo, clave_ssh_publica: str | None = None) -> str:
     if clave_ssh_publica:
         l += ["    ssh_authorized_keys:", f"      - {clave_ssh_publica}"]
     l += ["ssh_pwauth: true", "chpasswd:", "  expire: false"]
+    if acceso:
+        # Hallazgo 18-nov-2026 (R5 SSH entrante en OpenStack): la red externa
+        # del cluster tiene un PMTU roto más allá de ~1400 bytes (confirmado
+        # con 'ping -M do' contra el cluster real -- los ICMP "frag needed"
+        # no llegan de vuelta, así que el descubrimiento automático de MTU no
+        # se activa solo). El síntoma es que SSH conecta por TCP y hace el
+        # saludo inicial, pero se cuelga para siempre en el intercambio de
+        # llaves (su primer paquete grande). Se baja el MTU de la interfaz de
+        # acceso a mano, en CADA arranque (bootcmd, no runcmd, que solo corre
+        # una vez) para que sobreviva un reinicio de la VM. La interfaz se
+        # identifica por su MAC porque el nombre (ensX/eth0) varía.
+        l += ["bootcmd:",
+              "  - |",
+              f'    MAC="{acceso.mac}"',
+              '    IFACE=$(for d in /sys/class/net/*; do '
+              '[ "$(cat "$d/address" 2>/dev/null)" = "$MAC" ] && basename "$d" && break; done)',
+              '    [ -n "$IFACE" ] && ip link set "$IFACE" mtu 1400 || true']
     return "\n".join(l) + "\n"
 
 
@@ -210,9 +228,17 @@ def user_data_cirros(nodo: Nodo, interfaces: list[InterfazEnlace],
     for itf in interfaces:
         l.append(f"poner_ip {itf.mac} {itf.cidr}   # enlace {itf.enlace_id}")
     if acceso and acceso.red_libvirt:
+        # 'red_libvirt' aquí solo decide DHCP vs IP estática (ver
+        # config_acceso()); el MISMO config_acceso() lo usan Linux real Y
+        # OpenStack real, así que esta rama también corre para OpenStack --
+        # DriverOpenStack ignora el nombre de la red libvirt, pero sí hace
+        # DHCP real vía Neutron. El MTU roto (18-nov, ver user_data_ubuntu)
+        # se encontró en la red externa de OpenStack, por eso se ajusta acá
+        # también, antes de pedir IP por DHCP.
         l.append('i=$(nombre_if ' + acceso.mac + ')')
         l.append('if [ -n "$i" ]; then')
         l.append('  ip link set "$i" up')
+        l.append('  ip link set "$i" mtu 1400')
         l.append("  cat > /tmp/dhcp-bound.sh << 'SCRIPTEOF'")
         l.append('#!/bin/sh')
         l.append('case "$1" in')
@@ -241,6 +267,6 @@ def archivos_semilla(nodo: Nodo, interfaces: list[InterfazEnlace],
     if nodo.flavor == "cirros":
         return {"user-data": user_data_cirros(nodo, interfaces, acceso),
                 "meta-data": meta_data_cirros(nodo)}
-    return {"user-data": user_data_ubuntu(nodo, clave_ssh_publica),
+    return {"user-data": user_data_ubuntu(nodo, clave_ssh_publica, acceso),
             "meta-data": meta_data(nodo),
             "network-config": network_config_ubuntu(interfaces, acceso)}

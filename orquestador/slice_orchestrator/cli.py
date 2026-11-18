@@ -47,6 +47,7 @@ from typing import Any
 from .models import Host
 from .direccionamiento import CREDENCIALES
 from .servicio_slices import ErrorServicio, ServicioSlices
+import config_cluster as cfg_cluster
 
 
 def _construir_servicio_linux_real(ruta_estado: str) -> ServicioSlices:
@@ -201,6 +202,16 @@ def _mostrar_slice(d: dict[str, Any]) -> str:
                 sal.append(f"  {n['clave']} ({n['flavor']}): usuario={usuario}  contraseña={clave}")
             else:
                 sal.append(f"  {n['clave']} ({n['flavor']}): credenciales desconocidas (imagen personalizada)")
+        nodos_con_ssh = [n for n in d["nodos"] if n.get("puerto_ssh")]
+        if nodos_con_ssh:
+            sal += ["", "Acceso SSH entrante (R5, solo Linux real por ahora):"]
+            for n in nodos_con_ssh:
+                worker = cfg_cluster.WORKERS.get(n["host"], {})
+                ip_worker = worker.get("ip", n["host"])
+                cred = CREDENCIALES.get(n["flavor"])
+                usuario = cred[0] if cred else "<usuario>"
+                sal.append(f"  {n['clave']}: ssh -p {n['puerto_ssh']} {usuario}@{ip_worker}"
+                           f"  (vm_ip={n['ip_acceso']})")
     return "\n".join(sal)
 
 

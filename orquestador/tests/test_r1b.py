@@ -747,6 +747,44 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(c, 0)
         self.assertNotIn("Acceso a las VMs", out)
 
+    def test_mostrar_slice_imprime_acceso_ssh_cuando_hay_puerto(self):
+        """R5 SSH entrante (18-nov): cuando un nodo activo tiene puerto_ssh
+        asignado (solo pasa con el driver Linux REAL -- no se puede disparar
+        desde un deploy simulado de pruebas), _mostrar_slice debe imprimir el
+        comando ssh listo para copiar. Se construye el dict directamente
+        (mismo shape que devuelve ServicioSlices.ver_slice) porque el camino
+        real requiere libvirt de verdad."""
+        d = {
+            "id": "slice-999", "nombre": "ssh-test", "estado": "activo", "tipo": "lineal",
+            "zona": "az-lab", "owner": "brighit",
+            "nodos": [{
+                "clave": "vm1", "nombre": "ssh-test-vm1", "flavor": "cirros",
+                "vcpu": 1, "ram_mb": 512, "disco_gb": 1.0, "imagen": "cirros-0.6.2.qcow2",
+                "host": "server1", "estado": "activo", "acceso_internet": True,
+                "interfaces": [], "puerto_ssh": 20007, "ip_acceso": "192.168.122.50",
+            }],
+            "enlaces": [],
+        }
+        texto = cli._mostrar_slice(d)
+        self.assertIn("Acceso SSH entrante", texto)
+        self.assertIn("ssh -p 20007 cirros@192.168.201.1", texto)
+        self.assertIn("vm_ip=192.168.122.50", texto)
+
+    def test_mostrar_slice_no_imprime_acceso_ssh_sin_puerto(self):
+        d = {
+            "id": "slice-998", "nombre": "sin-ssh", "estado": "activo", "tipo": "lineal",
+            "zona": None, "owner": "brighit",
+            "nodos": [{
+                "clave": "vm1", "nombre": "sin-ssh-vm1", "flavor": "cirros",
+                "vcpu": 1, "ram_mb": 512, "disco_gb": 1.0, "imagen": "cirros-0.6.2.qcow2",
+                "host": "server1", "estado": "activo", "acceso_internet": False,
+                "interfaces": [], "puerto_ssh": None, "ip_acceso": None,
+            }],
+            "enlaces": [],
+        }
+        texto = cli._mostrar_slice(d)
+        self.assertNotIn("Acceso SSH entrante", texto)
+
     def test_errores_dan_codigo_1_y_mensaje_claro_sin_traza(self):
         c, _, err = self.correr("slice", "listar", usuario=None)
         self.assertEqual(c, 1)
