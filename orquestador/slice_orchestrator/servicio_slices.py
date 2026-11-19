@@ -780,8 +780,12 @@ class ServicioSlices:
 
     def emitir_token_consola(self, usuario: str, slice_id: str, nodo: str) -> dict[str, Any]:
         """Emite un token de un solo uso, nominativo y con caducidad para la consola
-        de una VM del usuario. Se guarda solo su hash. El puerto es simulado: el
-        proxy VNC del headnode del HLD no existe todavía."""
+        de una VM del usuario. Contra el driver OpenStack REAL, además pide a Nova
+        una URL noVNC real (ver ``DriverOpenStack.url_consola``) y la incluye en la
+        respuesta -- hallazgo 18-nov-2026: ese método ya existía en el driver pero
+        nunca se llamaba desde aquí, así que el usuario siempre veía el aviso de
+        "simulado" sin importar el driver activo. Contra Linux (o si Nova falla)
+        sigue siendo solo el token simulado, como antes."""
         usuario = self._usuario(usuario)
         with self._lock:
             slc = self._propio(usuario, slice_id)
@@ -801,8 +805,24 @@ class ServicioSlices:
             }
             self._guardar()
             logger.info("[%s] emitió token de consola de %s/%s", usuario, slice_id, composicion.clave_de(n))
-            return {"host": n.host_id, "puerto": PUERTO_VNC_BASE + posicion, "token": token,
-                    "expira_en": TTL_TOKEN_CONSOLA_S, "simulado": True}
+            resultado = {"host": n.host_id, "puerto": PUERTO_VNC_BASE + posicion, "token": token,
+                         "expira_en": TTL_TOKEN_CONSOLA_S, "simulado": True}
+            if getattr(self._driver, "modo", None) == "real" and hasattr(self._driver, "url_consola"):
+                try:
+                    # Mismo hallazgo del 12-nov que ya se corrigió para eliminar_slice
+                    # (ver orchestrator.py): cada invocación de la CLI crea una
+                    # instancia NUEVA del driver, así que proyecto_id nunca está
+                    # resuelto todavía para un slice que ya estaba ACTIVO de una
+                    # invocación anterior. preparar_slice() es idempotente (reutiliza
+                    # el proyecto por nombre si ya existe), así que llamarlo aquí
+                    # antes de pedir la consola es seguro.
+                    if hasattr(self._driver, "preparar_slice"):
+                        self._driver.preparar_slice(slc)
+                    resultado["url_consola_real"] = self._driver.url_consola(n.nombre)
+                    resultado["simulado"] = False
+                except Exception as exc:
+                    logger.warning("No se pudo obtener la consola real de %s: %s", n.nombre, exc)
+            return resultado
 
     def limpiar_residuos(self, confirmar: bool = False) -> dict[str, Any]:
         """Delega en el driver activo la detección (y, si ``confirmar=True``, el

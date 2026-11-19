@@ -374,9 +374,12 @@ def _cmd_mantenimiento(svc: ServicioSlices, a: argparse.Namespace) -> None:
 def _cmd_consola(svc: ServicioSlices, a: argparse.Namespace) -> None:
     if a.sub == "emitir":
         t = svc.emitir_token_consola(a.usuario, a.id, a.nodo)
+        aviso = (f"Consola noVNC REAL (Nova): {t['url_consola_real']}"
+                 if t.get("url_consola_real")
+                 else "Aviso: el puerto es simulado; el proxy VNC todavía no existe.")
         _salida(a, t, f"Consola de {a.nodo}: host {t['host']}, puerto {t['puerto']}\n"
                       f"Token (de un solo uso, caduca en {t['expira_en']} s): {t['token']}\n"
-                      "Aviso: el puerto es simulado; el proxy VNC todavía no existe.")
+                      f"{aviso}")
     else:
         t = svc.canjear_token_consola(a.token)
         _salida(a, t, f"Token válido y consumido: {t['usuario']} → {t['slice_id']}/{t['nodo']} "
