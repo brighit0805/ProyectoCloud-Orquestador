@@ -249,6 +249,37 @@ class TestDespliegueCompleto(unittest.TestCase):
         self.assertTrue(all(p["port_security_enabled"] is False for p in enlaces))
         self.assertTrue(all(not p.get("security_groups") for p in enlaces))
 
+    def test_nodo_openstack_con_acceso_guarda_la_ip_externa_sin_puerto_ssh(self):
+        """Gap de usabilidad (18-nov-2026): antes de este cambio, la IP
+        externa de una VM OpenStack con acceso a Internet solo se podía ver
+        con un comando admin (openstack server list), nunca con el propio
+        CLI del orquestador. Ahora el despliegue debe dejar 'ip_acceso' en el
+        nodo con la IP real del puerto de acceso -- y, a diferencia de
+        Linux, SIN 'puerto_ssh' (en OpenStack no hay NAT, la IP ya es
+        externa de por sí)."""
+        d = driver_simulado()
+        slc = construir_ex1_topology("ex1", "ex1", "grupo2@pucp.edu.pe", "nova")
+        hosts = d.descubrir_hosts()
+        cfg = {"ips": {"vm1": "10.60.110.21", "vm3": "10.60.110.22"}, "prefijo": 24,
+               "gateway": "10.60.110.1", "vlan": None}
+        desplegar_slice_existente(slc, hosts, d, VLANAllocator(),
+                                  EstrategiaPlacement.ROUND_ROBIN, config_acceso=cfg)
+        nodos_con_acceso = [n for n in slc.nodos if n.acceso_internet]
+        self.assertTrue(nodos_con_acceso)
+        con_acceso = {p["name"]: p for p in d.sesion.puertos.values() if p["name"].endswith(":acceso")}
+        for nodo in nodos_con_acceso:
+            self.assertIsNone(nodo.puerto_ssh)
+            self.assertIsNotNone(nodo.ip_acceso)
+            puerto = con_acceso[f"{nodo.nombre}:acceso"]
+            self.assertEqual(nodo.ip_acceso, puerto["fixed_ips"][0]["ip_address"])
+        for nodo in slc.nodos:
+            if not nodo.acceso_internet:
+                self.assertIsNone(nodo.ip_acceso)
+
+    def test_obtener_ip_puerto_acceso_sin_puerto_devuelve_none(self):
+        d = driver_simulado()
+        self.assertIsNone(d.obtener_ip_puerto_acceso("vm-inexistente"))
+
     def test_eliminar_slice_no_deja_recursos_ni_proyecto(self):
         d = driver_simulado()
         slc, hosts = desplegar(anillo3(), d)

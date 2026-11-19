@@ -703,6 +703,20 @@ class DriverOpenStack:
                       cuerpo={"server": servidor})
         return r.json()["server"]["id"]
 
+    def obtener_ip_puerto_acceso(self, nombre_vm: str) -> str | None:
+        """IP externa asignada al puerto de acceso a Internet de ``nombre_vm``
+        (R5: sin esto el CLI no puede mostrarle al usuario con qué IP
+        conectarse por SSH; antes solo se podía ver con un comando admin
+        como ``openstack server list``)."""
+        r = self._api("admin", "GET", f"{self.config.neutron}/ports",
+                      params={"name": self._nombre_puerto(nombre_vm, "acceso"),
+                              "project_id": self.proyecto_id})
+        items = r.json().get("ports", [])
+        if not items:
+            return None
+        fixed_ips = items[0].get("fixed_ips") or []
+        return fixed_ips[0]["ip_address"] if fixed_ips else None
+
     def _buscar_red_externa(self) -> str:
         r = self._api("admin", "GET", f"{self.config.neutron}/networks", params={"name": self.red_externa})
         items = r.json().get("networks", [])
@@ -1123,6 +1137,11 @@ class SesionSimulada:
                 item = dict(json[clave])
                 item["id"] = self._id(clave)
                 item.setdefault("project_id", item.get("tenant_id"))
+                if nombre == "ports" and not item.get("fixed_ips"):
+                    # Como el Neutron real: un puerto sin fixed_ips explícito
+                    # (el puerto de acceso a Internet en OpenStack, que no
+                    # pide IP fija) recibe una IP por DHCP de la red externa.
+                    item["fixed_ips"] = [{"ip_address": f"10.60.110.{100 + self._n}"}]
                 coleccion[item["id"]] = item
                 return _Resp(201, {clave: item})
             if ruta.startswith(base + "/") and metodo == "DELETE":

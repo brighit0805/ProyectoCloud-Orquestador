@@ -328,23 +328,34 @@ def _puerto_ssh_determinista(slice_id: str, nodo_id: str) -> int:
 
 def _configurar_ssh_si_corresponde(driver, slc: Slice, nodo, acceso_drv: dict | None,
                                     host_uri: str) -> None:
-    """Publica el puerto SSH de ``nodo`` si pidió acceso a Internet y el driver
-    activo lo soporta (R5, solo Linux real por ahora -- ver driver_base.py)."""
-    if not nodo.acceso_internet or not acceso_drv or not acceso_drv.get("red_libvirt"):
+    """Publica cómo conectarse por SSH a ``nodo`` si pidió acceso a Internet.
+
+    En Linux real (R5) se hace DNAT de un puerto del worker al :22 de la VM
+    (``configurar_ssh_entrante``). En OpenStack real no hace falta NAT -- el
+    puerto de acceso ya tiene una IP externa propia desde que se creó -- pero
+    el usuario final no tenía antes ninguna forma de verla sin un comando
+    admin (``openstack server list``); aquí se lee esa IP y se guarda igual
+    que en Linux para que el CLI la muestre (ver cli.py)."""
+    if not nodo.acceso_internet:
         return
-    if not hasattr(driver, "configurar_ssh_entrante"):
+    if acceso_drv and acceso_drv.get("red_libvirt") and hasattr(driver, "configurar_ssh_entrante"):
+        puerto = _puerto_ssh_determinista(slc.id, nodo.id)
+        try:
+            ip_vm = driver.configurar_ssh_entrante(
+                host_uri, acceso_drv["red_libvirt"], acceso_drv["mac"], puerto)
+        except Exception as exc:       # noqa: BLE001
+            # No tumba el despliegue: la VM ya está activa y accesible por consola;
+            # el SSH entrante es un extra. Se deja constancia en el log.
+            logger.warning("No se pudo publicar el acceso SSH de %s: %s", nodo.nombre, exc)
+            return
+        nodo.puerto_ssh = puerto
+        nodo.ip_acceso = ip_vm
         return
-    puerto = _puerto_ssh_determinista(slc.id, nodo.id)
-    try:
-        ip_vm = driver.configurar_ssh_entrante(
-            host_uri, acceso_drv["red_libvirt"], acceso_drv["mac"], puerto)
-    except Exception as exc:       # noqa: BLE001
-        # No tumba el despliegue: la VM ya está activa y accesible por consola;
-        # el SSH entrante es un extra. Se deja constancia en el log.
-        logger.warning("No se pudo publicar el acceso SSH de %s: %s", nodo.nombre, exc)
-        return
-    nodo.puerto_ssh = puerto
-    nodo.ip_acceso = ip_vm
+    if hasattr(driver, "obtener_ip_puerto_acceso"):
+        try:
+            nodo.ip_acceso = driver.obtener_ip_puerto_acceso(nodo.nombre)
+        except Exception as exc:       # noqa: BLE001
+            logger.warning("No se pudo leer la IP de acceso de %s: %s", nodo.nombre, exc)
 
 
 def _liberar_slice_driver(driver, slc: Slice) -> None:

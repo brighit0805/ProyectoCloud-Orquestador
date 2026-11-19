@@ -203,8 +203,13 @@ def _mostrar_slice(d: dict[str, Any]) -> str:
             else:
                 sal.append(f"  {n['clave']} ({n['flavor']}): credenciales desconocidas (imagen personalizada)")
         nodos_con_ssh = [n for n in d["nodos"] if n.get("puerto_ssh")]
-        if nodos_con_ssh:
-            sal += ["", "Acceso SSH entrante (R5, solo Linux real por ahora):"]
+        # OpenStack: no hay NAT, la IP de acceso ya es externa -- sin puerto
+        # DNAT que mostrar, pero sin esto el usuario no tenía forma de ver
+        # esta IP salvo con un comando admin (openstack server list).
+        nodos_con_ip_directa = [n for n in d["nodos"]
+                                 if n.get("ip_acceso") and not n.get("puerto_ssh")]
+        if nodos_con_ssh or nodos_con_ip_directa:
+            sal += ["", "Acceso SSH entrante (R5):"]
             for n in nodos_con_ssh:
                 worker = cfg_cluster.WORKERS.get(n["host"], {})
                 ip_worker = worker.get("ip", n["host"])
@@ -212,6 +217,10 @@ def _mostrar_slice(d: dict[str, Any]) -> str:
                 usuario = cred[0] if cred else "<usuario>"
                 sal.append(f"  {n['clave']}: ssh -p {n['puerto_ssh']} {usuario}@{ip_worker}"
                            f"  (vm_ip={n['ip_acceso']})")
+            for n in nodos_con_ip_directa:
+                cred = CREDENCIALES.get(n["flavor"])
+                usuario = cred[0] if cred else "<usuario>"
+                sal.append(f"  {n['clave']}: ssh {usuario}@{n['ip_acceso']}")
     return "\n".join(sal)
 
 
