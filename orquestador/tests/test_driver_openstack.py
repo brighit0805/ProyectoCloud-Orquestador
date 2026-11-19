@@ -829,5 +829,40 @@ class TestLimpiarResiduos(unittest.TestCase):
         self.assertEqual([f["name"] for f in s.flavores], ["512MBRAM_1VCPUs_4GBRoot"])
 
 
+class TestDespliegueParaleloOpenStack(unittest.TestCase):
+    """R3: 'Uso eficiente (paralelo) de APIs de OpenStack en el despliegue de
+    VMs sobre OpenStack' (10 pts). orchestrator.py crea en paralelo las VMs
+    de una misma ola del plan de despliegue cuando el driver se declara
+    seguro para eso (hoy solo DriverOpenStack -- DriverLinux sigue
+    secuencial a propósito, habla SSH/libvirt directo a cada worker)."""
+
+    def test_vms_se_crean_en_paralelo_sin_recursos_duplicados(self):
+        d = driver_simulado()
+        self.assertTrue(d.soporta_despliegue_paralelo)
+        slc = construir_ex1_topology("ex1", "ex1", "grupo2@pucp.edu.pe", "nova")
+        hosts = d.descubrir_hosts()
+        # vm1 y vm3 piden acceso a Internet -- comparten el mismo security
+        # group (orq-acceso-ssh), así que crearlas a la vez es justo el caso
+        # que podría disparar una condición de carrera si no hubiera candado.
+        cfg = {"ips": {"vm1": "10.60.110.21", "vm3": "10.60.110.22"}, "prefijo": 24,
+               "gateway": "10.60.110.1", "vlan": None}
+        desplegar_slice_existente(slc, hosts, d, VLANAllocator(),
+                                  EstrategiaPlacement.ROUND_ROBIN, config_acceso=cfg)
+        sim = d.sesion
+        self.assertEqual(len(sim.servidores), 6)
+        grupos = [g for g in sim.security_groups.values() if g["name"] == "orq-acceso-ssh"]
+        self.assertEqual(len(grupos), 1)
+        con_acceso = [p for p in sim.puertos.values() if p["name"].endswith(":acceso")]
+        self.assertEqual(len(con_acceso), 2)
+        # Ningún ID generado por SesionSimulada._id() debe repetirse -- sería
+        # la señal de dos hilos leyendo el mismo contador a la vez.
+        ids = ([s["id"] for s in sim.servidores.values()] + [p["id"] for p in sim.puertos.values()]
+               + [r["id"] for r in sim.redes.values()] + [sr["id"] for sr in sim.subredes.values()])
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_driver_linux_no_declara_soporte_de_despliegue_paralelo(self):
+        self.assertFalse(getattr(DriverLinux(), "soporta_despliegue_paralelo", False))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -36,7 +36,9 @@ este tipo de falla). DriverLinux no se ve afectado: no implementa
 from __future__ import annotations
 import hashlib
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .models import Slice, Host, EstadoSlice, TipoTopologia
 from . import topology_manager
@@ -163,73 +165,103 @@ def desplegar_slice_existente(
         if hasattr(driver, "preparar_slice"):
             driver.preparar_slice(slc)
 
-        # 4) Driver Linux: ejecuta el plan y registra cada recurso concreto
+        # 4) Driver: ejecuta el plan y registra cada recurso concreto
         # inmediatamente, para poder revertir incluso un fallo parcial.
-        for paso in plan["orden_creacion"]:
-            if paso["accion"] == "crear_red":
-                enlace = next(e for e in slc.enlaces if e.id == paso["enlace_id"])
-                # una red puede tocar dos hosts distintos (VLAN provider
-                # compartida a nivel de clúster); la creamos en el host
-                # de cada extremo para asegurar conectividad L2 entre ellos
-                host_origen = hosts_por_id[slc.nodo(enlace.nodo_origen).host_id]
-                host_destino = hosts_por_id[slc.nodo(enlace.nodo_destino).host_id]
-                if enlace.vlan_id is None:
-                    raise RuntimeError(f"El enlace {enlace.id} no tiene VLAN asignada")
-                for h in {host_origen.id: host_origen, host_destino.id: host_destino}.values():
-                    _con_reintentos(
-                        lambda h=h: driver.crear_red(h.uri_libvirt, enlace.nombre_red, enlace.vlan_id),
-                        f"crear_red {enlace.nombre_red} en {h.id}", reintentos, espera_reintento_s)
-                    ejecutados.append({"accion": "crear_red", "enlace_id": enlace.id, "host_id": h.id})
+        # Redes primero (secuencial: son rápidas y el VLANAllocator/driver no
+        # está pensado para que varios enlaces las reserven a la vez), VMs
+        # después -- y las VMs sí pueden ir en paralelo (R3, ver más abajo).
+        pasos_red, pasos_vm = plan["olas"]
+        lock_ejecutados = threading.Lock()
 
-            elif paso["accion"] == "crear_vm":
-                nodo = slc.nodo(paso["nodo_id"])
-                host = hosts_por_id[nodo.host_id]
-                redes_vm = []
-                for enlace in slc.enlaces:
-                    if nodo.id in (enlace.nodo_origen, enlace.nodo_destino):
-                        if enlace.nombre_red is None or enlace.vlan_id is None:
-                            raise RuntimeError(f"Red incompleta para el enlace {enlace.id}")
-                        # En un bus varios enlaces de la cadena comparten la misma
-                        # red (ver network_manager.asignar_redes); sin este chequeo
-                        # un nodo intermedio terminaría con dos NIC duplicadas sobre
-                        # la misma red en vez de la única interfaz que le corresponde.
-                        tupla = (enlace.nombre_red, enlace.vlan_id)
-                        if tupla not in redes_vm:
-                            redes_vm.append(tupla)
-                # Direccionamiento: IP y MAC de cada interfaz, y semilla cloud-init
-                interfaces = direccionamiento.interfaces_de(slc, nodo)
-                acceso_nic, acceso_drv = _interfaz_acceso(slc, nodo, config_acceso)
-                semilla = direccionamiento.archivos_semilla(
-                    nodo, interfaces, acceso_nic, clave_ssh_publica)
-                copiada = _con_reintentos(
-                    lambda: driver.asegurar_imagen(host.uri_libvirt, nodo.imagen),
-                    f"copiar imagen {nodo.imagen} a {host.id}", reintentos, espera_reintento_s)
-                if copiada:
+        for paso in pasos_red:
+            enlace = next(e for e in slc.enlaces if e.id == paso["enlace_id"])
+            # una red puede tocar dos hosts distintos (VLAN provider
+            # compartida a nivel de clúster); la creamos en el host
+            # de cada extremo para asegurar conectividad L2 entre ellos
+            host_origen = hosts_por_id[slc.nodo(enlace.nodo_origen).host_id]
+            host_destino = hosts_por_id[slc.nodo(enlace.nodo_destino).host_id]
+            if enlace.vlan_id is None:
+                raise RuntimeError(f"El enlace {enlace.id} no tiene VLAN asignada")
+            for h in {host_origen.id: host_origen, host_destino.id: host_destino}.values():
+                _con_reintentos(
+                    lambda h=h: driver.crear_red(h.uri_libvirt, enlace.nombre_red, enlace.vlan_id),
+                    f"crear_red {enlace.nombre_red} en {h.id}", reintentos, espera_reintento_s)
+                ejecutados.append({"accion": "crear_red", "enlace_id": enlace.id, "host_id": h.id})
+
+        def crear_un_nodo(paso: dict) -> None:
+            nodo = slc.nodo(paso["nodo_id"])
+            host = hosts_por_id[nodo.host_id]
+            redes_vm = []
+            for enlace in slc.enlaces:
+                if nodo.id in (enlace.nodo_origen, enlace.nodo_destino):
+                    if enlace.nombre_red is None or enlace.vlan_id is None:
+                        raise RuntimeError(f"Red incompleta para el enlace {enlace.id}")
+                    # En un bus varios enlaces de la cadena comparten la misma
+                    # red (ver network_manager.asignar_redes); sin este chequeo
+                    # un nodo intermedio terminaría con dos NIC duplicadas sobre
+                    # la misma red en vez de la única interfaz que le corresponde.
+                    tupla = (enlace.nombre_red, enlace.vlan_id)
+                    if tupla not in redes_vm:
+                        redes_vm.append(tupla)
+            # Direccionamiento: IP y MAC de cada interfaz, y semilla cloud-init
+            interfaces = direccionamiento.interfaces_de(slc, nodo)
+            acceso_nic, acceso_drv = _interfaz_acceso(slc, nodo, config_acceso)
+            semilla = direccionamiento.archivos_semilla(
+                nodo, interfaces, acceso_nic, clave_ssh_publica)
+            copiada = _con_reintentos(
+                lambda: driver.asegurar_imagen(host.uri_libvirt, nodo.imagen),
+                f"copiar imagen {nodo.imagen} a {host.id}", reintentos, espera_reintento_s)
+            if copiada:
+                with lock_ejecutados:
                     ejecutados.append({"accion": "asegurar_imagen", "host_id": host.id,
                                        "imagen": nodo.imagen})
-                _con_reintentos(
-                    lambda: driver.crear_vm(
-                        host_uri=host.uri_libvirt,
-                        nombre_vm=nodo.nombre,
-                        vcpu=nodo.vcpu,
-                        ram_mb=nodo.ram_mb,
-                        disco_gb=nodo.disco_gb,
-                        imagen=nodo.imagen,
-                        redes=redes_vm,
-                        macs=[i.mac for i in interfaces],
-                        semilla=semilla,
-                        acceso=acceso_drv,
-                    ),
-                    f"crear_vm {nodo.nombre} en {host.id}", reintentos, espera_reintento_s)
-                # Se registra ANTES de verificar: si la verificación de abajo
-                # falla, el rollback (que recorre `ejecutados`) debe borrar
-                # también esta VM, no solo las anteriores.
+            _con_reintentos(
+                lambda: driver.crear_vm(
+                    host_uri=host.uri_libvirt,
+                    nombre_vm=nodo.nombre,
+                    vcpu=nodo.vcpu,
+                    ram_mb=nodo.ram_mb,
+                    disco_gb=nodo.disco_gb,
+                    imagen=nodo.imagen,
+                    redes=redes_vm,
+                    macs=[i.mac for i in interfaces],
+                    semilla=semilla,
+                    acceso=acceso_drv,
+                ),
+                f"crear_vm {nodo.nombre} en {host.id}", reintentos, espera_reintento_s)
+            # Se registra ANTES de verificar: si la verificación de abajo
+            # falla, el rollback (que recorre `ejecutados`) debe borrar
+            # también esta VM, no solo las anteriores.
+            with lock_ejecutados:
                 ejecutados.append({"accion": "crear_vm", "nodo_id": nodo.id, "host_id": host.id})
-                _verificar_vm_activa(
-                    driver, host.uri_libvirt, nodo.nombre,
-                    f"VM {nodo.nombre} en {host.id}", intentos_verificacion, espera_verificacion_s)
-                nodo.estado = "activo"
-                _configurar_ssh_si_corresponde(driver, slc, nodo, acceso_drv, host.uri_libvirt)
+            _verificar_vm_activa(
+                driver, host.uri_libvirt, nodo.nombre,
+                f"VM {nodo.nombre} en {host.id}", intentos_verificacion, espera_verificacion_s)
+            nodo.estado = "activo"
+            _configurar_ssh_si_corresponde(driver, slc, nodo, acceso_drv, host.uri_libvirt)
+
+        # R3: "uso eficiente (paralelo) de las APIs de OpenStack en el
+        # despliegue de VMs" -- las VMs de una misma ola son independientes
+        # entre sí por diseño del plan (ver topology_manager), así que con un
+        # driver que se declara seguro para esto (hoy solo DriverOpenStack;
+        # ver su atributo `soporta_despliegue_paralelo`) se crean a la vez en
+        # vez de una por una. DriverLinux sigue secuencial a propósito: habla
+        # por SSH/libvirt directo a cada worker y no se quiso arriesgar su
+        # comportamiento bajo concurrencia sin poder probarlo a fondo contra
+        # el clúster real antes de la entrega.
+        if getattr(driver, "soporta_despliegue_paralelo", False) and len(pasos_vm) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(pasos_vm), 8)) as ex:
+                futuros = [ex.submit(crear_un_nodo, paso) for paso in pasos_vm]
+                primer_error: Exception | None = None
+                for fut in as_completed(futuros):
+                    exc = fut.exception()
+                    if exc is not None and primer_error is None:
+                        primer_error = exc
+            if primer_error is not None:
+                raise primer_error
+        else:
+            for paso in pasos_vm:
+                crear_un_nodo(paso)
 
     except Exception as exc:
         logger.error("Falló el despliegue del slice %s en el paso %s: %s. Ejecutando rollback...",

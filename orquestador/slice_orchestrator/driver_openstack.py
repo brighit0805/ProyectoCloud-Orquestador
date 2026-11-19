@@ -46,6 +46,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -177,6 +178,12 @@ def _normalizar_nombre_imagen(nombre: str) -> str:
 # ----------------------------------------------------------------------- driver
 @dataclass
 class DriverOpenStack:
+    # R3: "uso eficiente (paralelo) de las APIs de OpenStack" -- a diferencia
+    # de DriverLinux (SSH/libvirt directo a cada worker, no se tocó por
+    # prudencia), este driver solo hace llamadas HTTP independientes por VM,
+    # así que orchestrator.py puede crear las VMs de una misma ola del plan
+    # de despliegue concurrentemente cuando ve este flag en True.
+    soporta_despliegue_paralelo: bool = True
     modo: ModoOpenStack = ModoOpenStack.SIMULADO
     config: ConfigOpenStack = field(default_factory=ConfigOpenStack)
     sesion: Any = None                       # objeto con .request(...) (requests.Session o SesionSimulada)
@@ -202,17 +209,24 @@ class DriverOpenStack:
     _redes: dict[str, str] = field(default_factory=dict)
     _subredes: dict[str, str] = field(default_factory=dict)
     _ips_puerto: dict[tuple[str, str], str] = field(default_factory=dict)
+    # R3 (paralelismo): candados para el único estado que SÍ se comparte entre
+    # VMs de una misma ola cuando orchestrator.py las crea concurrentemente.
+    # _redes/_subredes/_ips_puerto no hace falta protegerlos: se llenan antes
+    # de la ola paralela (crear_red es secuencial), nunca durante ella.
+    _lock_registro: Any = field(default_factory=threading.Lock, repr=False, compare=False)
+    _lock_sg: Any = field(default_factory=threading.Lock, repr=False, compare=False)
 
     # ------------------------------------------------------------ utilidades
     def _registrar(self, accion: str, host_uri: str, recurso: str) -> None:
         """Igual que en DriverLinux: cuenta operaciones, permite inyectar fallas
         (simulación de errores para probar reintentos/rollback) y deja historial."""
-        self._numero_operacion += 1
-        n = self._numero_operacion
-        if (self.fallar_en_operacion is not None
-                and self.fallar_en_operacion <= n < self.fallar_en_operacion + self.fallas_consecutivas):
-            raise DriverOpenStackError(f"Falla simulada en {accion} de {recurso}")
-        self.historial.append((accion, host_uri, recurso))
+        with self._lock_registro:
+            self._numero_operacion += 1
+            n = self._numero_operacion
+            if (self.fallar_en_operacion is not None
+                    and self.fallar_en_operacion <= n < self.fallar_en_operacion + self.fallas_consecutivas):
+                raise DriverOpenStackError(f"Falla simulada en {accion} de {recurso}")
+            self.historial.append((accion, host_uri, recurso))
 
     def _http(self):
         if self.sesion is None:
@@ -613,11 +627,22 @@ class DriverOpenStack:
         egress que Neutron agrega solas a todo security group nuevo).
         No se restringe el tráfico entre VMs del mismo slice porque eso ya
         lo resuelven las VLANs (primer criterio de R5, separado) -- este
-        grupo solo regula qué entra desde fuera del cluster."""
-        nombre = "orq-acceso-ssh"
-        sg_id = self._buscar("security-groups", nombre, "security-groups")
-        if sg_id:
-            return sg_id
+        grupo solo regula qué entra desde fuera del cluster.
+
+        R3 (18-nov-2026, paralelismo): con varias VMs de un mismo slice
+        creándose a la vez (ver orchestrator.py), este es el único recurso
+        que comparten -- sin el candado, dos hilos podrían ver "no existe"
+        al mismo tiempo y crear dos grupos duplicados (la misma clase de bug
+        que ya se arregló hoy para el caso secuencial, ver el commit del
+        fix de la clave del dict)."""
+        with self._lock_sg:
+            nombre = "orq-acceso-ssh"
+            sg_id = self._buscar("security-groups", nombre, "security-groups")
+            if sg_id:
+                return sg_id
+            return self._crear_security_group_acceso(nombre)
+
+    def _crear_security_group_acceso(self, nombre: str) -> str:
         c = self.config
         r = self._api("admin", "POST", c.neutron + "/security-groups", esperado=(201,),
                       cuerpo={"security_group": {
@@ -1069,6 +1094,11 @@ class SesionSimulada:
         self.hipervisores = [
             {"hypervisor_hostname": f"worker{i}", "vcpus": 4, "memory_mb": 3935,
              "vcpus_used": 0, "memory_mb_used": 0} for i in range(1, workers + 1)]
+        # R3 (paralelismo): los tests ejercitan el driver desde varios hilos a
+        # la vez (ver test_despliegue_paralelo_en_openstack en
+        # test_driver_openstack.py); sin este candado, dos hilos podrían leer
+        # el mismo self._n antes de incrementarlo y generar IDs duplicados.
+        self._lock = threading.Lock()
 
     def _id(self, prefijo: str) -> str:
         self._n += 1
@@ -1079,6 +1109,10 @@ class SesionSimulada:
                    list(self.redes.values()) + list(self.puertos.values()) + list(self.servidores.values()))
 
     def request(self, metodo, url, headers=None, json=None, params=None, timeout=None):
+        with self._lock:
+            return self._request(metodo, url, headers, json, params, timeout)
+
+    def _request(self, metodo, url, headers=None, json=None, params=None, timeout=None):
         ruta = url.split("//", 1)[1].split("/", 1)[1]
         ruta = "/" + ruta
         self.comandos.append((metodo, ruta, json if json is not None else params))
