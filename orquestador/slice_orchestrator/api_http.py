@@ -11,9 +11,13 @@ Endpoints:
     GET  /slices/<id>                        detalle (admin puede ver cualquiera)
     DELETE /slices/<id>                      elimina (admin puede eliminar cualquiera)
     GET  /recursos                           consumo de recursos (propio)
+    GET  /zonas                              zonas de disponibilidad reales (GUI, 23-nov)
+    GET  /catalogo                           catálogo de topologías disponibles (GUI, 23-nov)
     POST /mantenimiento/limpiar-residuos     SOLO admin
+    GET  /, /app.js, /style.css, ...         sirve la GUI estática (misma API, sin CORS)
 
-Todas las rutas salvo /login exigen el header ``Authorization: Bearer <token>``.
+Todas las rutas salvo /login y los archivos estáticos exigen el header
+``Authorization: Bearer <token>``.
 
 Arranque:
     python3 -m slice_orchestrator.api_http --driver linux --puerto 8080
@@ -24,9 +28,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import mimetypes
 import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from .control_acceso import (
@@ -152,10 +158,44 @@ class Handler(BaseHTTPRequestHandler):
             elif ruta == "/recursos":
                 sesion = self._sesion()
                 self._enviar_json(200, _svc.consumo_recursos(sesion["usuario"]))
+            elif ruta == "/zonas":
+                self._sesion()
+                self._enviar_json(200, _svc.listar_zonas())
+            elif ruta == "/catalogo":
+                self._sesion()
+                self._enviar_json(200, _svc.listar_topologias())
+            elif self._servir_estatico(ruta):
+                pass
             else:
                 self._enviar_json(404, {"error": f"Ruta no encontrada: GET {ruta}"})
         except Exception as exc:  # noqa: BLE001
             self._responder_error(exc)
+
+    # -- GUI estática (agregado 23-nov-2026) ---------------------------------
+    def _servir_estatico(self, ruta: str) -> bool:
+        """Sirve los archivos de la GUI (carpeta ``gui/`` junto a este módulo)
+        en el mismo origen que la API, para no necesitar CORS ni un segundo
+        servidor. Devuelve False (sin escribir nada) si la ruta no calza con
+        ningún archivo, para que el llamador pueda seguir con su propio 404."""
+        base = Path(__file__).resolve().parent / "gui"
+        if not base.is_dir():
+            return False
+        rel = "index.html" if ruta == "/" else ruta.lstrip("/")
+        destino = (base / rel).resolve()
+        try:
+            destino.relative_to(base.resolve())
+        except ValueError:
+            return False  # intento de escapar de la carpeta (../..) -- se ignora
+        if not destino.is_file():
+            return False
+        tipo, _ = mimetypes.guess_type(str(destino))
+        cuerpo = destino.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", tipo or "application/octet-stream")
+        self.send_header("Content-Length", str(len(cuerpo)))
+        self.end_headers()
+        self.wfile.write(cuerpo)
+        return True
 
     def do_DELETE(self) -> None:  # noqa: N802
         ruta = urlparse(self.path).path
