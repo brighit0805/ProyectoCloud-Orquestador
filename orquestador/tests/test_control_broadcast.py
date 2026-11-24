@@ -197,11 +197,13 @@ class TestConfigDesdeModulo(unittest.TestCase):
         self.assertIsNone(cfg.switch)
         self.assertEqual(cfg.uplink_por_host, {})
 
-    def test_config_cluster_real_no_toca_uplinks_ni_switch(self):
-        """Hasta que el grupo confirme los nombres, solo hay storm control."""
+    def test_config_cluster_real_poda_uplinks_pero_no_toca_ovs1(self):
+        """Uplinks de los servers confirmados (ens4, 24-nov); ovs1 sigue sin
+        configurar hasta tener el nombre de sus puertos."""
         import config_cluster
         cfg = cb.ConfigBroadcast.desde_modulo(config_cluster)
-        self.assertEqual(cfg.uplink_por_host, {})
+        self.assertEqual(cfg.uplink_por_host,
+                         {h: "ens4" for h in config_cluster.WORKERS})
         self.assertIsNone(cfg.switch)
         self.assertEqual(set(cfg.bridge_por_host), set(config_cluster.WORKERS))
 

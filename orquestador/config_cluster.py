@@ -23,9 +23,9 @@ POOL_LIBVIRT = "default"
 # VLAN_FIN) -- sin un bridge OVS real todavía, crear esos enlaces fallará;
 # queda documentado como limitación pendiente, no simulado como si ya funcionara.
 WORKERS = {
-    "server1": {"ip": "192.168.201.1", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
-    "server2": {"ip": "192.168.201.2", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
-    "server3": {"ip": "192.168.201.3", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
+    "server1": {"ip": "192.168.201.1", "bridge": "br-int", "uplink": "ens4"},   # uplink verificado con ovs-vsctl list-ports (24-nov)
+    "server2": {"ip": "192.168.201.2", "bridge": "br-int", "uplink": "ens4"},   # uplink verificado con ovs-vsctl list-ports (24-nov)
+    "server3": {"ip": "192.168.201.3", "bridge": "br-int", "uplink": "ens4"},   # uplink verificado con ovs-vsctl list-ports (24-nov)
     # server4 (192.168.201.4) existe pero NO es un worker KVM: sin br-int/libvirt/OVS visibles y el
     # headnode no entra por SSH (24-nov). Descomentar solo si Germán confirma que se usa y lo habilitan.
     # "server4": {"ip": "192.168.201.4", "bridge": "br-int"},
