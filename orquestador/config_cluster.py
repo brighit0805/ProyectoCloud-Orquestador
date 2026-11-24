@@ -29,6 +29,16 @@ WORKERS = {
     "server4": {"ip": "192.168.201.4", "bridge": "br-int"},   # CONFIRMAR IP (por patrón) y bridge real
 }
 
+# Switches OVS dedicados del clúster Linux (Fase 2, nodos separados de los KVM workers).
+# OVS1 pertenece al clúster Linux; OVS2 pertenece al clúster OpenStack.
+# Germán (23-nov): "Deben aplicar reglas en servidores y switches de datos (OVS1 y 2)".
+# Para el driver Linux solo aplica OVS1.
+# IPs verificadas por VNC (ip -4 -br a) el 23-nov-2026.
+OVS_SWITCHES = {
+    "ovs1": {"ip": "192.168.201.5", "bridge": "br-int"},   # switch Linux cluster
+    # ovs2: 192.168.202.5 — cluster OpenStack, no aplica para driver Linux
+}
+
 # Zona de disponibilidad del clúster Linux: agrupa todos los hosts de WORKERS
 # (server1..server4). Para el examen (Ex2) basta con quitar "server1" de WORKERS
 # o usar otro nombre de zona aquí.

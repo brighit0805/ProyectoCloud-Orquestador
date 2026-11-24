@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orquestador de Slices — Grupo 2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ======================= Pantalla de login ======================= -->
+<section id="vista-login" class="vista">
+  <form id="form-login" class="tarjeta-login" novalidate>
+    <h1>Orquestador de Slices</h1>
+    <p class="subtitulo">Grupo 2 — TEL141</p>
+    <label for="login-usuario">Usuario
+      <input type="text" id="login-usuario" autocomplete="username" required>
+    </label>
+    <label for="login-password">Contraseña
+      <input type="password" id="login-password" autocomplete="current-password" required>
+    </label>
+    <button type="submit" class="primario ancho">Ingresar</button>
+    <p id="login-error" class="error oculto" role="alert"></p>
+  </form>
+</section>
+
+<!-- ======================= App principal ======================= -->
+<section id="vista-app" class="vista oculto">
+  <header class="barra-superior">
+    <div class="marca">
+      <h1>Orquestador de Slices</h1>
+      <span class="marca-sub">Grupo 2 · TEL141</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab activo" data-tab="disenar" role="tab" aria-selected="true">Diseñar slice</button>
+      <button class="tab" data-tab="slices" role="tab" aria-selected="false">Mis slices</button>
+      <button class="tab" data-tab="recursos" role="tab" aria-selected="false">Recursos</button>
+    </nav>
+    <div class="info-sesion">
+      <span id="sesion-usuario"></span>
+      <span id="sesion-rol" class="chip"></span>
+      <label id="toggle-todos-wrap" class="oculto">
+        <input type="checkbox" id="toggle-todos"> ver todos
+      </label>
+      <button id="btn-salir" class="secundario chico">Salir</button>
+    </div>
+  </header>
+
+  <!-- ---------- Tab: Diseñar ---------- -->
+  <section id="tab-disenar" class="panel-tab panel-tab-disenar">
+    <div class="disenar-layout">
+
+      <aside class="panel-lateral">
+        <form id="form-disenar" novalidate>
+          <div class="campo">
+            <label for="d-nombre">Nombre del slice</label>
+            <input type="text" id="d-nombre" placeholder="mi-slice-1" maxlength="30" required
+                   aria-describedby="d-nombre-ayuda">
+            <p class="campo-ayuda" id="d-nombre-ayuda">Minúsculas, números y guiones, de 1 a 30 caracteres.</p>
+            <p class="campo-error oculto" id="d-nombre-error" role="alert"></p>
+          </div>
+
+          <div class="campo">
+            <label for="d-tipo">Tipo de topología</label>
+            <select id="d-tipo"></select>
+          </div>
+
+          <div class="campo">
+            <label for="d-nodos">Número de nodos</label>
+            <input type="number" id="d-nodos" min="2" step="1" value="3" required
+                   aria-describedby="d-nodos-ayuda">
+            <p class="campo-ayuda" id="d-nodos-ayuda"></p>
+            <p class="campo-error oculto" id="d-nodos-error" role="alert"></p>
+          </div>
+
+          <div class="campo oculto" id="wrap-ramificacion">
+            <label for="d-ramificacion">Ramificación (árbol)</label>
+            <input type="number" id="d-ramificacion" min="2" step="1" value="2">
+          </div>
+
+          <div class="campo">
+            <label for="d-zona">Zona de disponibilidad</label>
+            <select id="d-zona"><option value="">Sin especificar</option></select>
+          </div>
+
+          <details class="seccion-plegable">
+            <summary>Injertos (ramas) <span class="contador-chip" id="contador-injertos"></span></summary>
+            <p class="campo-ayuda">Cuelga una sub-topología de un nodo ya existente de la base.</p>
+            <div id="d-lista-injertos"></div>
+            <div class="fila-compacta">
+              <select id="inj-sobre"></select>
+              <select id="inj-tipo"></select>
+              <input type="number" id="inj-nodos" min="1" value="2" title="nodos del injerto">
+              <input type="number" id="inj-ramificacion" min="2" value="2" title="ramificación (árbol)" class="oculto">
+              <button type="button" id="inj-agregar" class="secundario chico">Agregar rama</button>
+            </div>
+          </details>
+
+          <details class="seccion-plegable">
+            <summary>Capacidad e Internet <span class="contador-chip" id="contador-opciones"></span></summary>
+            <p class="campo-ayuda">Opcional — lo que dejes en blanco usa el flavor por defecto.</p>
+            <div id="d-lista-capacidad"></div>
+            <div class="fila-compacta">
+              <select id="cap-nodo"></select>
+              <input type="number" id="cap-vcpu" min="1" max="8" placeholder="vCPU">
+              <input type="number" id="cap-ram" min="256" max="16384" placeholder="RAM MB">
+              <input type="number" id="cap-disco" min="1" max="100" step="0.5" placeholder="Disco GB">
+              <button type="button" id="cap-agregar" class="secundario chico">Fijar</button>
+            </div>
+            <div id="d-lista-internet"></div>
+            <div class="fila-compacta fila-compacta-2">
+              <select id="net-nodo"></select>
+              <button type="button" id="net-agregar" class="secundario chico">Dar acceso a internet</button>
+            </div>
+          </details>
+
+          <details class="seccion-plegable">
+            <summary>Importar desde plantilla</summary>
+            <p class="campo-ayuda">Crea un slice nuevo a partir de un .json exportado antes.</p>
+            <input type="file" id="plant-archivo" accept="application/json,.json">
+            <input type="text" id="plant-nombre" placeholder="Nombre del nuevo slice (opcional)">
+            <button type="button" id="plant-crear" class="secundario chico ancho">Crear desde plantilla</button>
+          </details>
+        </form>
+
+        <div class="panel-lateral-acciones">
+          <label class="opcion-desplegar"><input type="checkbox" id="d-desplegar"> Desplegar de inmediato</label>
+          <button type="button" id="d-crear" class="primario ancho">Crear slice</button>
+          <p id="d-mensaje" class="mensaje oculto" role="status"></p>
+        </div>
+      </aside>
+
+      <section class="panel-lienzo">
+        <div class="modo-tabs" role="tablist">
+          <button class="modo-tab activo" data-modo="editar" role="tab" aria-selected="true">Editar topología</button>
+          <button class="modo-tab" data-modo="preview" role="tab" aria-selected="false">Vista previa con injertos</button>
+        </div>
+        <p class="lienzo-ayuda">
+          <span id="ayuda-editar">Clic (o Enter con el nodo enfocado) en dos nodos para alternar el enlace entre ambos. Tab para moverte entre nodos.</span>
+          <span id="ayuda-preview" class="oculto">Vista de solo lectura: incluye los injertos sobre la figura base.</span>
+        </p>
+        <div class="canvas-wrap">
+          <svg id="d-lienzo" class="lienzo-svg" viewBox="0 0 1000 620" role="application" aria-label="Lienzo de edición de topología">
+            <g class="capa-lienzo"></g>
+          </svg>
+          <svg id="d-preview" class="lienzo-svg oculto" viewBox="0 0 1000 620" role="img" aria-label="Vista previa de la topología con injertos">
+            <g class="capa-lienzo"></g>
+          </svg>
+          <div class="zoom-controles" id="zoom-controles-editar">
+            <button type="button" class="btn-zoom" data-zoom="in" aria-label="Acercar" title="Acercar">
+              <svg viewBox="0 0 20 20" width="16" height="16"><circle cx="8.5" cy="8.5" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><line x1="13" y1="13" x2="18" y2="18" stroke="currentColor" stroke-width="1.6"/><line x1="8.5" y1="5.5" x2="8.5" y2="11.5" stroke="currentColor" stroke-width="1.6"/><line x1="5.5" y1="8.5" x2="11.5" y2="8.5" stroke="currentColor" stroke-width="1.6"/></svg>
+            </button>
+            <button type="button" class="btn-zoom" data-zoom="out" aria-label="Alejar" title="Alejar">
+              <svg viewBox="0 0 20 20" width="16" height="16"><circle cx="8.5" cy="8.5" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><line x1="13" y1="13" x2="18" y2="18" stroke="currentColor" stroke-width="1.6"/><line x1="5.5" y1="8.5" x2="11.5" y2="8.5" stroke="currentColor" stroke-width="1.6"/></svg>
+            </button>
+            <button type="button" class="btn-zoom" data-zoom="fit" aria-label="Ajustar vista" title="Ajustar vista">
+              <svg viewBox="0 0 20 20" width="16" height="16"><path d="M3 7V3h4M17 7V3h-4M3 13v4h4M17 13v4h-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <!-- ---------- Tab: Mis slices ---------- -->
+  <section id="tab-slices" class="panel-tab oculto">
+    <div class="layout-slices">
+      <div class="columna-lista">
+        <div class="encabezado-columna">
+          <h2>Slices</h2>
+          <button id="btn-refrescar-slices" class="secundario chico">Refrescar</button>
+        </div>
+        <table id="tabla-slices">
+          <thead><tr><th>Nombre</th><th>Estado</th><th>Tipo</th><th>Nodos</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="columna-detalle">
+        <h2>Detalle</h2>
+        <div id="detalle-slice" class="caja-detalle">
+          <p class="campo-ayuda">Selecciona un slice de la lista.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------- Tab: Recursos ---------- -->
+  <section id="tab-recursos" class="panel-tab oculto">
+    <h2>Consumo por host</h2>
+    <table id="tabla-hosts">
+      <thead><tr><th>Host</th><th>Zona</th><th>vCPU</th><th>RAM (MB)</th><th>Disco (GB)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <h2>Mis slices activos</h2>
+    <table id="tabla-mis-slices">
+      <thead><tr><th>Nombre</th><th>Nodos</th><th>vCPU</th><th>RAM (MB)</th><th>Disco (GB)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="recursos-total" class="campo-ayuda"></p>
+    <button id="btn-refrescar-recursos" class="secundario chico">Refrescar</button>
+  </section>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

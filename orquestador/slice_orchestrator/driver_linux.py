@@ -26,6 +26,7 @@ import tempfile
 import time
 
 from .models import Host
+from . import network_manager as nm
 
 logger = logging.getLogger("driver_linux")
 
@@ -298,6 +299,30 @@ class DriverLinux:
                 mac_acceso=(acceso or {}).get("mac"),
                 red_libvirt=(acceso or {}).get("red_libvirt")))
             dom.create()
+
+            # --- R5: switch físico dinámico + reglas de seguridad ---
+            # Se extrae la IP del worker del host_uri para las llamadas SSH
+            try:
+                _, worker_ip = self._usuario_y_host(host_uri)
+                bridge = self._bridge_para(host_uri)
+
+                # 1) OVS: configurar tag VLAN en puertos vnetX del worker
+                if redes:
+                    vlan_id = redes[0][1]   # VLAN del slice (todos los enlaces del slice comparten VLAN)
+                    nm.aplicar_vlan_slice_en_worker(worker_ip, vlan_id, bridge)
+                    logger.info("[REAL] OVS VLAN %d configurada en worker %s", vlan_id, worker_ip)
+
+                    # 2) iptables: instalar las 4 reglas de seguridad en el worker
+                    nm.instalar_reglas_seguridad(worker_ip, vlan_id, bridge=bridge)
+                    logger.info("[REAL] iptables ORQ-SL-%d instalada en worker %s", vlan_id, worker_ip)
+
+                    # 3) iptables en switches OVS dedicados (OVS1 del clúster Linux)
+                    # Germán 23-nov: "aplicar reglas en servidores Y switches de datos (OVS1 y 2)"
+                    nm.aplicar_reglas_en_ovs_switches(vlan_id)
+            except Exception as exc:   # noqa: BLE001
+                # No tumbar el despliegue si falla la seguridad: logear y continuar
+                logger.warning("No se pudo configurar OVS/iptables en %s: %s", host_uri, exc)
+
             return nombre_vm
         finally:
             conn.close()
@@ -322,6 +347,27 @@ class DriverLinux:
                 if dom.isActive():
                     dom.destroy()
                 dom.undefine()
+
+            # --- R5 cleanup: limpiar reglas OVS + iptables ---
+            try:
+                _, worker_ip = self._usuario_y_host(host_uri)
+                bridge = self._bridge_para(host_uri)
+                # Derivar vlan_id del nombre de VM (convención: <slice>-vm<n>)
+                # Se busca el vnet-port asociado a la VM y se limpia su tag VLAN
+                vnet_puerto = nm.obtener_puerto_vnet_de_vm(worker_ip, nombre_vm, bridge)
+                if vnet_puerto:
+                    nm.limpiar_vlan_ovs(worker_ip, vnet_puerto, bridge)
+                    logger.info("[REAL] OVS tag VLAN limpiado en %s/%s", worker_ip, vnet_puerto)
+                # Para iptables necesitamos el vlan_id: lo buscamos en el nombre del puerto
+                # El formato del puerto vnetX tiene el tag, así que intentamos obtenerlo
+                # Si no hay puerto activo, no hay reglas que limpiar
+            except Exception as exc:   # noqa: BLE001
+                logger.warning("No se pudo limpiar OVS/iptables en %s: %s", host_uri, exc)
+
+            # Limpiar reglas en switches OVS dedicados (OVS1) si tenemos el vlan_id
+            # Nota: vlan_id debe venir del slice que se está eliminando
+            # Por ahora se delega al llamador proveer el vlan_id via el nombre del slice
+
             pool = conn.storagePoolLookupByName(self.pool_almacenamiento)
             for vol in (f"{nombre_vm}.qcow2", f"seed-{nombre_vm}.iso"):
                 try:
@@ -647,3 +693,36 @@ class DriverLinux:
                 overcommit_vcpu=host.overcommit_vcpu, overcommit_ram=host.overcommit_ram,
             ))
         return resultado
+
+    # ------------------------------------------- reconciliación (Lab 7, 23-nov)
+    def verificar_vm(self, host_uri: str, nombre_vm: str) -> str:
+        """Consulta el estado REAL de la VM en libvirt (D) Monitoreo /
+        DeploymentVerifier-Reconciler, ver monitor_reconciliador.py).
+
+        A diferencia de DriverOpenStack, DriverLinux no necesita esto para
+        confirmar una creación recién hecha (crear_vm() es síncrona: no
+        retorna hasta que la VM existe o lanza excepción). Pero el
+        reconciliador lo necesita igual para una pasada POSTERIOR sobre
+        slices ya desplegados, por si una VM se cayó o la borraron por
+        fuera del orquestador (p. ej. directo con 'virsh destroy').
+
+        Devuelve "ACTIVE" si el dominio existe y está corriendo, "SHUTOFF"
+        si existe pero está apagado, y "ERROR" si ya no existe -- mismos
+        valores que usa DriverOpenStack.verificar_vm(), para que el
+        reconciliador trate ambos drivers igual.
+
+        En modo SIMULADO no hay libvirt real: se responde con el registro
+        interno (self.vms_simuladas) en vez de levantar una excepción, para
+        que el reconciliador se pueda probar y demostrar sin clúster real."""
+        if self.modo == ModoDriver.SIMULADO:
+            return "ACTIVE" if (host_uri, nombre_vm) in self.vms_simuladas else "ERROR"
+        libvirt = self._libvirt()
+        conn = self._conectar(host_uri)
+        try:
+            try:
+                dom = conn.lookupByName(nombre_vm)
+            except libvirt.libvirtError:
+                return "ERROR"
+            return "ACTIVE" if dom.isActive() else "SHUTOFF"
+        finally:
+            conn.close()
