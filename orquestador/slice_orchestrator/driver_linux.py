@@ -26,7 +26,6 @@ import tempfile
 import time
 
 from .models import Host
-from . import network_manager as nm
 
 logger = logging.getLogger("driver_linux")
 
@@ -71,6 +70,8 @@ class DriverLinux:
     # modo REAL porque nada sabía CUÁLES eran los workers ni cómo conectarse).
     # Solo se usa en modo REAL; en modo SIMULADO queda vacío sin efecto.
     hosts_conocidos: list[Host] = field(default_factory=list)
+    # Último reporte de aplicar_control_broadcast (R5): comandos por host y errores.
+    ultimo_control_broadcast: dict | None = None
 
     # ------------------------------------------------------------ utilidades
     def _registrar(self, accion: str, host_uri: str, recurso: str) -> None:
@@ -299,30 +300,6 @@ class DriverLinux:
                 mac_acceso=(acceso or {}).get("mac"),
                 red_libvirt=(acceso or {}).get("red_libvirt")))
             dom.create()
-
-            # --- R5: switch físico dinámico + reglas de seguridad ---
-            # Se extrae la IP del worker del host_uri para las llamadas SSH
-            try:
-                _, worker_ip = self._usuario_y_host(host_uri)
-                bridge = self._bridge_para(host_uri)
-
-                # 1) OVS: configurar tag VLAN en puertos vnetX del worker
-                if redes:
-                    vlan_id = redes[0][1]   # VLAN del slice (todos los enlaces del slice comparten VLAN)
-                    nm.aplicar_vlan_slice_en_worker(worker_ip, vlan_id, bridge)
-                    logger.info("[REAL] OVS VLAN %d configurada en worker %s", vlan_id, worker_ip)
-
-                    # 2) iptables: instalar las 4 reglas de seguridad en el worker
-                    nm.instalar_reglas_seguridad(worker_ip, vlan_id, bridge=bridge)
-                    logger.info("[REAL] iptables ORQ-SL-%d instalada en worker %s", vlan_id, worker_ip)
-
-                    # 3) iptables en switches OVS dedicados (OVS1 del clúster Linux)
-                    # Germán 23-nov: "aplicar reglas en servidores Y switches de datos (OVS1 y 2)"
-                    nm.aplicar_reglas_en_ovs_switches(vlan_id)
-            except Exception as exc:   # noqa: BLE001
-                # No tumbar el despliegue si falla la seguridad: logear y continuar
-                logger.warning("No se pudo configurar OVS/iptables en %s: %s", host_uri, exc)
-
             return nombre_vm
         finally:
             conn.close()
@@ -347,27 +324,6 @@ class DriverLinux:
                 if dom.isActive():
                     dom.destroy()
                 dom.undefine()
-
-            # --- R5 cleanup: limpiar reglas OVS + iptables ---
-            try:
-                _, worker_ip = self._usuario_y_host(host_uri)
-                bridge = self._bridge_para(host_uri)
-                # Derivar vlan_id del nombre de VM (convención: <slice>-vm<n>)
-                # Se busca el vnet-port asociado a la VM y se limpia su tag VLAN
-                vnet_puerto = nm.obtener_puerto_vnet_de_vm(worker_ip, nombre_vm, bridge)
-                if vnet_puerto:
-                    nm.limpiar_vlan_ovs(worker_ip, vnet_puerto, bridge)
-                    logger.info("[REAL] OVS tag VLAN limpiado en %s/%s", worker_ip, vnet_puerto)
-                # Para iptables necesitamos el vlan_id: lo buscamos en el nombre del puerto
-                # El formato del puerto vnetX tiene el tag, así que intentamos obtenerlo
-                # Si no hay puerto activo, no hay reglas que limpiar
-            except Exception as exc:   # noqa: BLE001
-                logger.warning("No se pudo limpiar OVS/iptables en %s: %s", host_uri, exc)
-
-            # Limpiar reglas en switches OVS dedicados (OVS1) si tenemos el vlan_id
-            # Nota: vlan_id debe venir del slice que se está eliminando
-            # Por ahora se delega al llamador proveer el vlan_id via el nombre del slice
-
             pool = conn.storagePoolLookupByName(self.pool_almacenamiento)
             for vol in (f"{nombre_vm}.qcow2", f"seed-{nombre_vm}.iso"):
                 try:
@@ -393,13 +349,60 @@ class DriverLinux:
         tiene API en libvirt). Falla ruidosamente salvo que el propio comando
         ya sea idempotente (se arma así en los llamadores)."""
         usuario, host = self._usuario_y_host(host_uri)
+        self._ejecutar_ssh(f"{usuario}@{host}", comando)
+
+    @staticmethod
+    def _ejecutar_ssh(destino: str, comando: str) -> None:
         r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                            f"{usuario}@{host}", comando],
-                           capture_output=True, text=True, timeout=30)
+                            destino, comando],
+                           capture_output=True, text=True, timeout=60)
         if r.returncode != 0:
             raise DriverLinuxError(
-                f"No se pudo ejecutar en {host}: {comando!r} -> rc={r.returncode} "
+                f"No se pudo ejecutar en {destino}: {comando!r} -> rc={r.returncode} "
                 f"stderr={r.stderr.strip()}")
+
+    # --------------------------------------------- control de broadcast (R5)
+    def aplicar_control_broadcast(self, plan, cfg, uri_por_host: dict[str, str]) -> dict:
+        """Deja los bridges OVS (y ovs1, si está configurado) en el estado del
+        plan de ``control_broadcast``: poda de VLANs en uplinks y storm control
+        por puerto de VM. Se llama con el plan COMPLETO tras cada cambio, así
+        que es idempotente.
+
+        Es de mejor esfuerzo: si un servidor falla, se reporta y se sigue con
+        los demás; nunca revierte un slice ya desplegado por esto."""
+        from .control_broadcast import comandos_host, comandos_switch
+
+        reporte: dict = {"hosts": {}, "switch": None, "errores": []}
+        hosts = sorted(set(plan.vlans_por_host) | set(cfg.bridge_por_host))
+        for host in hosts:
+            cmds = comandos_host(host, plan, cfg)
+            if not cmds:
+                continue
+            uri = uri_por_host.get(host)
+            self.historial.append(("control_broadcast", uri or host, host))
+            reporte["hosts"][host] = cmds
+            if self.modo == ModoDriver.SIMULADO:
+                logger.info("[SIMULADO] control_broadcast %s: %d comandos", host, len(cmds))
+                continue
+            try:
+                if uri is None:
+                    raise DriverLinuxError(f"sin URI conocida para {host}")
+                self._ejecutar_remoto(uri, " && ".join(cmds))
+            except DriverLinuxError as exc:
+                logger.warning("Control de broadcast no aplicado en %s: %s", host, exc)
+                reporte["errores"].append(f"{host}: {exc}")
+        cmds = comandos_switch(plan, cfg)
+        if cmds:
+            reporte["switch"] = cmds
+            self.historial.append(("control_broadcast", cfg.switch.destino_ssh, "switch"))
+            if self.modo == ModoDriver.REAL:
+                try:
+                    self._ejecutar_ssh(cfg.switch.destino_ssh, " && ".join(cmds))
+                except DriverLinuxError as exc:
+                    logger.warning("Poda de VLANs en el switch no aplicada: %s", exc)
+                    reporte["errores"].append(f"switch: {exc}")
+        self.ultimo_control_broadcast = reporte
+        return reporte
 
     def configurar_ssh_entrante(self, host_uri: str, red_libvirt: str, mac_acceso: str,
                                  puerto_externo: int, intentos: int = 10,

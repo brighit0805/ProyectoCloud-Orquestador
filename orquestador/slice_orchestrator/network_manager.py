@@ -3,25 +3,24 @@ network_manager.py
 -------------------
 Network Manager (submódulo de B) Orquestación).
 
-Responsabilidades:
-1. Para cada Enlace del slice, decidir el nombre de red/puente (bridge)
-   que lo representará en libvirt, y asignarle una VLAN dedicada (red
-   tipo "provider", según RF-26 del Entregable 1 — no túneles
-   self-service).
-2. Switch físico dinámico: configurar/limpiar el tag VLAN de los puertos
-   OVS (br-int) en cada worker cuando se despliega o elimina un slice
-   Linux, limitando los broadcasts a la VLAN del slice (R5 — rúbrica EX2).
+Responsabilidad en esta primera versión de código: para cada Enlace del
+slice, decidir el nombre de red/puente (bridge) que lo representará en
+libvirt, y asignarle una VLAN dedicada (red tipo "provider", según
+RF-26 del Entregable 1 — no túneles self-service).
+
+Nota de alcance: en esta entrega no se implementan todavía los
+sub-componentes de seguridad (Security Group Manager, Broadcast
+Control) definidos en la arquitectura del Entregable 2 — el enunciado
+de este laboratorio pide explícitamente "sin APIs, solo funciones" de
+despliegue lineal/anillo; VLAN Allocator es el único sub-componente que
+se necesita para que dos VMs en hosts distintos puedan verse por red.
 """
 
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass, field
 
 from .models import Slice, TipoTopologia
-
-# Usuario SSH hacia los workers (mismo que config_cluster.py)
-_USUARIO_SSH = "ubuntu"
 
 
 @dataclass
@@ -117,90 +116,6 @@ def asignar_redes(slc: Slice, allocator: VLANAllocator) -> dict[str, str]:
     return redes
 
 
-# ---------------------------------------------------------------------------
-# Switch físico dinámico — OVS VLAN tagging (R5 EX2)
-# ---------------------------------------------------------------------------
-
-def _ssh_ovs(worker_ip: str, *args: str) -> str:
-    """Ejecuta 'sudo ovs-vsctl <args>' en el worker vía SSH sin contraseña
-    interactiva (requiere NOPASSWD en /etc/sudoers.d/orq-ovs en el worker).
-    Lanza RuntimeError si el comando falla."""
-    cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",
-           f"{_USUARIO_SSH}@{worker_ip}", "sudo", "ovs-vsctl"] + list(args)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"ovs-vsctl en {worker_ip} falló: {result.stderr.strip()}"
-        )
-    return result.stdout.strip()
-
-
-def listar_puertos_ovs(worker_ip: str, bridge: str = "br-int") -> list[str]:
-    """Devuelve los puertos del bridge OVS en el worker (ej. ['vnet0', 'ens4'])."""
-    salida = _ssh_ovs(worker_ip, "list-ports", bridge)
-    return [p for p in salida.splitlines() if p.strip()]
-
-
-def configurar_vlan_ovs(worker_ip: str, puerto: str, vlan_id: int,
-                        bridge: str = "br-int") -> None:
-    """Asigna el tag VLAN al puerto OVS indicado en el worker.
-
-    Limita los broadcasts del puerto a la VLAN del slice, aislando
-    el tráfico entre topologías (switch físico dinámico — R5 EX2).
-    """
-    _ssh_ovs(worker_ip, "set", "port", puerto, f"tag={vlan_id}")
-
-
-def limpiar_vlan_ovs(worker_ip: str, puerto: str,
-                     bridge: str = "br-int") -> None:
-    """Elimina el tag VLAN del puerto OVS (lo deja en modo trunk/sin VLAN).
-    Se llama al eliminar una VM del slice para limpiar la configuración."""
-    try:
-        _ssh_ovs(worker_ip, "clear", "port", puerto, "tag")
-    except RuntimeError:
-        # Si el puerto ya no existe (VM eliminada), no es error
-        pass
-
-
-def aplicar_vlan_slice_en_worker(worker_ip: str, vlan_id: int,
-                                  bridge: str = "br-int") -> list[str]:
-    """Configura el tag VLAN del slice en TODOS los puertos vnetX del worker.
-
-    Detecta automáticamente qué puertos vnetX están presentes en el bridge
-    (cada VM crea su propio vnetN al arrancar con libvirt) y les asigna
-    el tag VLAN del slice.
-
-    Devuelve la lista de puertos configurados.
-    """
-    puertos = listar_puertos_ovs(worker_ip, bridge)
-    puertos_vnet = [p for p in puertos if p.startswith("vnet")]
-    for puerto in puertos_vnet:
-        configurar_vlan_ovs(worker_ip, puerto, vlan_id, bridge)
-    return puertos_vnet
-
-
-def limpiar_vlan_slice_en_worker(worker_ip: str, vnet_puerto: str,
-                                  bridge: str = "br-int") -> None:
-    """Limpia el tag VLAN de un puerto vnetX específico al eliminar una VM."""
-    limpiar_vlan_ovs(worker_ip, vnet_puerto, bridge)
-
-
-def obtener_puerto_vnet_de_vm(worker_ip: str, nombre_vm: str,
-                               bridge: str = "br-int") -> str | None:
-    """Busca el puerto vnetX en el bridge OVS que corresponde a una VM.
-
-    libvirt crea vnet0, vnet1, … en orden de aparición; el puerto de una
-    VM concreta se identifica consultando el XML de la VM en libvirt y
-    cruzando con los puertos del bridge OVS.
-
-    Por ahora devuelve el primer puerto vnetX libre (heurística válida
-    para clusters con una sola VM por worker por slice).
-    """
-    puertos = listar_puertos_ovs(worker_ip, bridge)
-    puertos_vnet = [p for p in puertos if p.startswith("vnet")]
-    return puertos_vnet[0] if puertos_vnet else None
-
-
 def redes_por_nodo(slc: Slice) -> dict[str, list[str]]:
     """
     Para cada nodo, devuelve la lista de nombres de red a los que debe
@@ -224,209 +139,3 @@ def redes_por_nodo(slc: Slice) -> dict[str, list[str]]:
         if enlace.nombre_red not in resultado[enlace.nodo_destino]:
             resultado[enlace.nodo_destino].append(enlace.nombre_red)
     return resultado
-
-
-# ---------------------------------------------------------------------------
-# Reglas de seguridad en Linux cluster — iptables (R5 EX2, 15 pts)
-# ---------------------------------------------------------------------------
-#
-# El orquestador instala una chain propia (ORQ-ISOLATION) en cada worker
-# al desplegar un slice Linux. Cubre 4 tipos de reglas:
-#
-#   1. Aislamiento entre slices   — DROP entre VLANs distintas
-#   2. Allowlist de puertos       — solo los puertos del slice son válidos
-#   3. Anti-spoofing              — bloquea IPs/MACs que no corresponden a la VM
-#   4. Rate limiting de broadcasts — limita paquetes broadcast por segundo
-#
-# Requiere NOPASSWD para /usr/sbin/iptables en sudoers de cada worker
-# (ya configurado en /etc/sudoers.d/orq-iptables durante el setup del cluster).
-# ---------------------------------------------------------------------------
-
-# Puertos TCP permitidos por defecto en todo slice (SSH de gestión)
-_PUERTOS_BASE = [22]
-
-# Límite de broadcasts por segundo por puerto (anti-flood)
-_BROADCAST_LIMIT = 50
-
-
-def _ssh_ipt(worker_ip: str, *args: str) -> str:
-    """Ejecuta 'sudo iptables <args>' en el worker vía SSH sin contraseña."""
-    cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",
-           f"{_USUARIO_SSH}@{worker_ip}", "sudo", "iptables"] + list(args)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"iptables en {worker_ip} falló: {result.stderr.strip()}"
-        )
-    return result.stdout.strip()
-
-
-def _chain_existe(worker_ip: str, chain: str) -> bool:
-    """Devuelve True si la chain ya existe en iptables del worker."""
-    cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",
-           f"{_USUARIO_SSH}@{worker_ip}",
-           "sudo", "iptables", "-L", chain, "-n"]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-    return result.returncode == 0
-
-
-def instalar_reglas_seguridad(
-    worker_ip: str,
-    vlan_id: int,
-    puertos_extra: list[int] | None = None,
-    vm_ip: str | None = None,
-    vm_mac: str | None = None,
-    bridge: str = "br-int",
-) -> None:
-    """Instala las 4 reglas de seguridad del orquestador en el worker.
-
-    Se llama una vez por worker al desplegar un slice Linux.
-
-    Parámetros
-    ----------
-    worker_ip    : IP del server (ej. "192.168.201.1")
-    vlan_id      : VLAN asignada al slice (ej. 3001)
-    puertos_extra: puertos TCP adicionales a permitir (además de SSH/22)
-    vm_ip        : IP de la VM en este worker (para anti-spoofing; opcional)
-    vm_mac       : MAC de la VM en este worker (para anti-spoofing; opcional)
-    bridge       : bridge OVS donde están conectadas las VMs
-    """
-    chain = f"ORQ-SL-{vlan_id}"
-    puertos = _PUERTOS_BASE + (puertos_extra or [])
-
-    # Crear la chain del slice si no existe
-    if not _chain_existe(worker_ip, chain):
-        _ssh_ipt(worker_ip, "-N", chain)
-
-    # Anclar la chain en FORWARD (si no está ya)
-    # -C comprueba sin modificar; si falla (rc!=0) es porque no existe → la agrega
-    check = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",
-             f"{_USUARIO_SSH}@{worker_ip}",
-             "sudo", "iptables", "-C", "FORWARD", "-j", chain]
-    if subprocess.run(check, capture_output=True, timeout=10).returncode != 0:
-        _ssh_ipt(worker_ip, "-I", "FORWARD", "1", "-j", chain)
-
-    # ------------------------------------------------------------------
-    # Regla 1 — Aislamiento entre slices
-    # Permite tráfico dentro de la misma VLAN; bloquea el resto en br-int
-    # ------------------------------------------------------------------
-    # (El aislamiento real lo hace OVS con el tag VLAN; aquí reforzamos
-    #  a nivel iptables bloqueando reenvío entre interfaces del bridge
-    #  que no pertenezcan al mismo dominio de difusión del slice.)
-    _ssh_ipt(worker_ip, "-A", chain,
-             "-i", bridge, "-o", bridge,
-             "-m", "comment", "--comment", f"orq-slice-{vlan_id}-allow-intra",
-             "-j", "ACCEPT")
-    _ssh_ipt(worker_ip, "-A", chain,
-             "-i", bridge,
-             "-m", "comment", "--comment", f"orq-slice-{vlan_id}-drop-inter",
-             "-j", "DROP")
-
-    # ------------------------------------------------------------------
-    # Regla 2 — Allowlist de puertos (TCP)
-    # Solo los puertos declarados para el slice son válidos
-    # ------------------------------------------------------------------
-    for puerto in puertos:
-        _ssh_ipt(worker_ip, "-A", chain,
-                 "-p", "tcp", "--dport", str(puerto),
-                 "-m", "comment", "--comment", f"orq-slice-{vlan_id}-puerto-{puerto}",
-                 "-j", "ACCEPT")
-    # Bloquear el resto de TCP
-    _ssh_ipt(worker_ip, "-A", chain,
-             "-p", "tcp",
-             "-m", "comment", "--comment", f"orq-slice-{vlan_id}-tcp-block",
-             "-j", "DROP")
-
-    # ------------------------------------------------------------------
-    # Regla 3 — Anti-spoofing (si se conoce la IP/MAC de la VM)
-    # Bloquea paquetes que vengan de una IP o MAC no asignada a la VM
-    # ------------------------------------------------------------------
-    if vm_ip:
-        _ssh_ipt(worker_ip, "-A", chain,
-                 "-i", bridge,
-                 "!", "-s", vm_ip,
-                 "-m", "comment", "--comment", f"orq-slice-{vlan_id}-antispoofing-ip",
-                 "-j", "DROP")
-    if vm_mac:
-        _ssh_ipt(worker_ip, "-A", chain,
-                 "-i", bridge,
-                 "-m", "mac", "--mac-source", "!", vm_mac,
-                 "-m", "comment", "--comment", f"orq-slice-{vlan_id}-antispoofing-mac",
-                 "-j", "DROP")
-
-    # ------------------------------------------------------------------
-    # Regla 4 — Rate limiting de broadcasts
-    # Limita paquetes broadcast a _BROADCAST_LIMIT pps para evitar floods
-    # ------------------------------------------------------------------
-    _ssh_ipt(worker_ip, "-A", chain,
-             "-i", bridge,
-             "-d", "255.255.255.255",
-             "-m", "limit", "--limit", f"{_BROADCAST_LIMIT}/sec",
-             "-m", "comment", "--comment", f"orq-slice-{vlan_id}-bcast-limit-allow",
-             "-j", "ACCEPT")
-    _ssh_ipt(worker_ip, "-A", chain,
-             "-i", bridge,
-             "-d", "255.255.255.255",
-             "-m", "comment", "--comment", f"orq-slice-{vlan_id}-bcast-limit-drop",
-             "-j", "DROP")
-
-
-def aplicar_reglas_en_ovs_switches(vlan_id: int) -> None:
-    """Aplica reglas de seguridad iptables en los switches OVS dedicados del
-    clúster Linux (OVS1). Requerido por Germán: "aplicar reglas en servidores
-    y switches de datos (OVS1 y 2)" — para el driver Linux solo aplica OVS1.
-
-    Se llama al desplegar un slice Linux, después de configurar los workers.
-    Los errores se registran como warnings (no deben impedir el despliegue).
-    """
-    import logging
-    from config_cluster import OVS_SWITCHES  # importación lazy para evitar circular
-    logger = logging.getLogger(__name__)
-
-    for nombre, datos in OVS_SWITCHES.items():
-        ovs_ip = datos["ip"]
-        bridge = datos.get("bridge", "br-int")
-        try:
-            instalar_reglas_seguridad(ovs_ip, vlan_id, bridge=bridge)
-            logger.info("[OVS-SW] Reglas iptables instaladas en %s (%s)", nombre, ovs_ip)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[OVS-SW] No se pudo configurar %s (%s): %s", nombre, ovs_ip, exc)
-
-
-def limpiar_reglas_en_ovs_switches(vlan_id: int) -> None:
-    """Elimina reglas iptables del slice en los switches OVS dedicados del
-    clúster Linux (OVS1). Se llama al eliminar un slice Linux."""
-    import logging
-    from config_cluster import OVS_SWITCHES
-    logger = logging.getLogger(__name__)
-
-    for nombre, datos in OVS_SWITCHES.items():
-        ovs_ip = datos["ip"]
-        try:
-            limpiar_reglas_seguridad(ovs_ip, vlan_id)
-            logger.info("[OVS-SW] Reglas iptables limpiadas en %s (%s)", nombre, ovs_ip)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[OVS-SW] No se pudo limpiar %s (%s): %s", nombre, ovs_ip, exc)
-
-
-def limpiar_reglas_seguridad(worker_ip: str, vlan_id: int) -> None:
-    """Elimina todas las reglas iptables del slice al eliminarlo.
-
-    Desancla la chain de FORWARD y la borra completamente.
-    """
-    chain = f"ORQ-SL-{vlan_id}"
-    if not _chain_existe(worker_ip, chain):
-        return  # nada que limpiar
-
-    # Desanclar de FORWARD
-    try:
-        _ssh_ipt(worker_ip, "-D", "FORWARD", "-j", chain)
-    except RuntimeError:
-        pass  # puede que ya no estuviera anclada
-
-    # Vaciar y borrar la chain
-    try:
-        _ssh_ipt(worker_ip, "-F", chain)   # flush (vaciar)
-        _ssh_ipt(worker_ip, "-X", chain)   # delete chain
-    except RuntimeError:
-        pass

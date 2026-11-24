@@ -58,7 +58,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import composicion, direccionamiento, network_manager, serializacion
+from . import composicion, control_broadcast, direccionamiento, network_manager, serializacion
 from .cola_trabajos import ColaTrabajos, ErrorCola
 from .driver_linux import DriverLinux
 from .persistencia_sqlite import AlmacenSQLite, ErrorAlmacen, es_ruta_sqlite
@@ -305,6 +305,30 @@ class ServicioSlices:
                 alloc.restaurar(slc.id, [e.vlan_id for e in slc.enlaces if e.vlan_id is not None])
         return alloc
 
+    def _actualizar_control_broadcast(self) -> dict | None:
+        """R5: recalcula el plan de broadcast con TODOS los slices activos y
+        se lo pasa al driver (si sabe aplicarlo). De mejor esfuerzo: un error
+        aquí se registra, pero no deshace el cambio que lo disparó."""
+        if not hasattr(self._driver, "aplicar_control_broadcast"):
+            return None
+        plan = control_broadcast.calcular_plan(self._slices.values())
+        cfg = control_broadcast.ConfigBroadcast.desde_modulo(cfg_cluster)
+        uris = {h.id: h.uri_libvirt for h in self._hosts_base}
+        try:
+            reporte = self._driver.aplicar_control_broadcast(plan, cfg, uris)
+        except Exception as exc:      # noqa: BLE001 -- nunca debe tumbar el ciclo de vida
+            logger.warning("Control de broadcast no aplicado: %s", exc)
+            return None
+        for err in reporte.get("errores", []):
+            logger.warning("Control de broadcast: %s", err)
+        return reporte
+
+    def estado_broadcast(self) -> list[dict[str, Any]]:
+        """Por servidor: VLANs con VMs, cuáles cruzan el uplink (las que tienen
+        VMs en otro servidor) y cuántos puertos de VM tienen storm control."""
+        with self._lock:
+            return control_broadcast.calcular_plan(self._slices.values()).resumen()
+
     def _validar_imagenes(self, slc: Slice) -> None:
         for n in slc.nodos:
             if n.imagen not in self._imagenes:
@@ -525,6 +549,7 @@ class ServicioSlices:
                     raise ErrorServicio(f"No se pudo editar en vivo: {exc}") from None
                 self._slices[slice_id] = trabajo
                 self._guardar()
+                self._actualizar_control_broadcast()
                 logger.info("[%s] editó en vivo %s (%d operaciones)", usuario, slice_id, len(operaciones))
                 return self.ver_slice(usuario, slice_id)
 
@@ -640,6 +665,7 @@ class ServicioSlices:
                 logger.error("[%s] despliegue de %s falló: %s", usuario, slice_id, exc)
                 raise ErrorServicio(f"No se pudo desplegar: {exc}") from None
             self._guardar()
+            self._actualizar_control_broadcast()
             logger.info("[%s] desplegó %s", usuario, slice_id)
             return self.ver_slice(usuario, slice_id)
 
@@ -682,11 +708,14 @@ class ServicioSlices:
         usuario = self._usuario(usuario)
         with self._lock:
             slc = self._propio(usuario, slice_id)
-            if slc.estado == EstadoSlice.ACTIVO:
+            estaba_activo = slc.estado == EstadoSlice.ACTIVO
+            if estaba_activo:
                 eliminar_slice(slc, self._inventario(), self._driver, self._allocator())
             del self._slices[slice_id]
             self._tokens = {h: t for h, t in self._tokens.items() if t["slice_id"] != slice_id}
             self._guardar()
+            if estaba_activo:
+                self._actualizar_control_broadcast()
             logger.info("[%s] eliminó %s", usuario, slice_id)
             return {"id": slice_id, "estado": EstadoSlice.ELIMINADO.value}
 

@@ -71,6 +71,20 @@ PREFIJO_ACCESO = 24
 # VLAN de los enlaces entre VMs (una por enlace) -- requiere bridge OVS real, ver nota arriba
 VLAN_INICIO, VLAN_FIN = 3000, 3099
 
+# Control de broadcast (R5, slice_orchestrator/control_broadcast.py).
+# Lo que no se configure aquí NO se toca en el clúster:
+#  - Poda de VLANs en el uplink de cada server: agregar "uplink": "<interfaz del bridge
+#    hacia ovs1>" en cada entrada de WORKERS (CONFIRMAR nombres reales con ovs-vsctl show).
+#  - Poda de VLANs en ovs1: llenar SWITCH_OVS, p. ej.
+#      {"destino_ssh": "ubuntu@192.168.201.5",   # ovs1, ver OVS_SWITCHES arriba
+#       "puerto_por_host": {"server1": "<puerto>", "server2": "<puerto>", "server3": "<puerto>"}}
+#  - Storm control (OpenFlow 1.3 + meters) en el bridge de cada server: se aplica siempre
+#    que el bridge exista; si falla, solo queda un warning en el log.
+# Los comandos usan 'sudo ovs-vsctl' y 'sudo ovs-ofctl': requieren NOPASSWD para esos
+# binarios, igual que iptables para el SSH entrante.
+SWITCH_OVS = None
+CONTROL_BROADCAST = {"limite_pps": 200, "rafaga": 100, "vlan_sin_uso": 4094, "storm_control": True}
+
 
 def uri(worker: str) -> str:
     return f"qemu+ssh://{USUARIO_SSH}@{WORKERS[worker]['ip']}/system"
