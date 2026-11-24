@@ -672,7 +672,19 @@ class DriverLinux:
         libvirt = self._libvirt()
         resultado: list[Host] = []
         for host in self.hosts_conocidos:
-            conn = self._conectar(host.uri_libvirt)
+            try:
+                conn = self._conectar(host.uri_libvirt)
+            except Exception as exc:       # noqa: BLE001
+                # Un host caído o con IP mal puesta no debe impedir ver ni usar
+                # los demás: queda INACTIVO (el scheduler no lo elige).
+                logger.warning("No se pudo leer el host %s (%s): queda inactivo", host.id, exc)
+                resultado.append(Host(
+                    id=host.id, nombre=host.nombre, uri_libvirt=host.uri_libvirt,
+                    capacidad_vcpu=host.capacidad_vcpu, capacidad_ram_mb=host.capacidad_ram_mb,
+                    zona_disponibilidad=host.zona_disponibilidad,
+                    capacidad_disco_gb=host.capacidad_disco_gb, activo=False,
+                    overcommit_vcpu=host.overcommit_vcpu, overcommit_ram=host.overcommit_ram))
+                continue
             try:
                 vcpu_usados = 0
                 ram_usados_mb = 0

@@ -349,6 +349,26 @@ def _cmd_recursos(svc: ServicioSlices, a: argparse.Namespace) -> None:
     _salida(a, r, "\n".join(texto))
 
 
+def _cmd_monitoreo(svc: ServicioSlices, a: argparse.Namespace) -> None:
+    r = svc.monitoreo_uso(a.intervalo)
+    texto = [f"Uso real medido durante {r['intervalo_s']:g} s (asignado = reservado por el orquestador):", ""]
+    ok = [h for h in r["hosts"] if "error" not in h]
+    texto.append(_tabla(
+        [[h["host"], h["zona"], f"{h['vcpu_asignadas']}/{h['vcpu_total']}",
+          f"{h['ram_asignada_mb']}/{h['ram_total_mb']:g}", f"{h['cpu_pct']}%",
+          f"{h['ram_usada_mb']:g}/{h['ram_fisica_mb']:g}", len(h["vms"])] for h in ok],
+        ["host", "zona", "vCPU asign.", "RAM asign. MB", "CPU real", "RAM real MB", "VMs"]))
+    filas_vm = [[h["host"], v["vm"], v["vcpu"], v["cpu_pct"], f"{v['ram_usada_mb']:g}/{v['ram_asignada_mb']:g}",
+                 f"{100 * v['ram_usada_mb'] / v['ram_asignada_mb']:.0f}%" if v["ram_asignada_mb"] else "-",
+                 v["ram_origen"]] for h in ok for v in h["vms"]]
+    texto += ["", "Por VM:", _tabla(filas_vm, ["host", "vm", "vCPU", "CPU %", "RAM usada/asig. MB", "RAM %", "RAM medida"])
+              if filas_vm else "  (sin VMs en ejecución)"]
+    for h in r["hosts"]:
+        if "error" in h:
+            texto.append(f"\n⚠ {h['host']}: {h['error']}")
+    _salida(a, r, "\n".join(texto))
+
+
 def _cmd_imagen(svc: ServicioSlices, a: argparse.Namespace) -> None:
     if a.sub == "listar":
         datos = svc.listar_imagenes()
@@ -422,6 +442,8 @@ def construir_parser() -> argparse.ArgumentParser:
     sub.add_parser("topologias", help="catálogo de topologías predefinidas")
     sub.add_parser("flavors", help="capacidades de VM disponibles")
     sub.add_parser("recursos", help="consumo de recursos del sistema y de sus slices")
+    m = sub.add_parser("monitoreo", help="uso REAL de CPU/RAM de cada host y VM (solo driver real; lee por SSH)")
+    m.add_argument("--intervalo", type=float, default=5.0, help="segundos entre las dos muestras (def. 5)")
     z = sub.add_parser("zona", help="zonas de disponibilidad reales del cluster (hosts por zona)").add_subparsers(dest="sub", required=True)
     z.add_parser("listar", help="lista las zonas detectadas y los hosts de cada una")
     r = sub.add_parser("red", help="estado de la red del clúster (R5)").add_subparsers(dest="sub", required=True)
@@ -522,7 +544,7 @@ def main(argv: list[str] | None = None, servicio: ServicioSlices | None = None) 
             raise ErrorServicio("Indique el usuario con --usuario o la variable ORQ_USUARIO")
         {"topologias": _cmd_topologias, "flavors": _cmd_flavors, "slice": _cmd_slice,
          "recursos": _cmd_recursos, "imagen": _cmd_imagen, "consola": _cmd_consola,
-         "zona": _cmd_zona, "red": _cmd_red,
+         "zona": _cmd_zona, "red": _cmd_red, "monitoreo": _cmd_monitoreo,
          "mantenimiento": _cmd_mantenimiento}[args.comando](svc, args)
         return 0
     except ErrorServicio as exc:

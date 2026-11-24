@@ -61,6 +61,7 @@ from typing import Any, Callable
 from . import composicion, control_broadcast, direccionamiento, network_manager, serializacion
 from .cola_trabajos import ColaTrabajos, ErrorCola
 from .driver_linux import DriverLinux
+from .monitoreo_uso import ErrorMedicion, MedidorUso, destino_ssh
 from .persistencia_sqlite import AlmacenSQLite, ErrorAlmacen, es_ruta_sqlite
 import config_cluster as cfg_cluster
 from .models import (
@@ -141,7 +142,9 @@ class ServicioSlices:
     def __init__(self, ruta_estado: str | os.PathLike | None = None,
                  hosts: list[Host] | None = None,
                  driver: Any | None = None,
-                 reloj: Callable[[], float] = time.time):
+                 reloj: Callable[[], float] = time.time,
+                 medidor_uso: Any | None = None):
+        self._medidor = medidor_uso
         self._lock = threading.RLock()
         self._cola_trabajos: ColaTrabajos | None = None
         self._ruta = Path(ruta_estado) if ruta_estado else None
@@ -875,6 +878,59 @@ class ServicioSlices:
                 total["ram_mb"] += r
                 total["disco_gb"] = round(total["disco_gb"] + d, 2)
             return {"hosts": salida_hosts, "mis_slices": mios, "total_mio": total}
+
+    def monitoreo_uso(self, intervalo_s: float = 5.0) -> dict[str, Any]:
+        """Uso REAL (CPU y RAM) de cada host y de sus VMs frente a lo ASIGNADO.
+
+        Lee los hosts por SSH (ver ``monitoreo_uso.py``), así que solo tiene
+        sentido con un driver real. Un host que no responde queda con
+        ``error`` y no impide medir los demás.
+        """
+        if not (intervalo_s > 0):
+            raise ErrorServicio("El intervalo debe ser mayor que 0 segundos")
+        medidor = self._medidor
+        if medidor is None:
+            if getattr(self._driver, "modo", None) != "real":
+                raise ErrorServicio(
+                    "El monitoreo de uso real lee los hosts por SSH: use un driver real "
+                    "(--driver openstack, o --driver linux con ORQ_LINUX_REAL=1).")
+            medidor = MedidorUso()
+        with self._lock:
+            self._sincronizar()
+            asignado = {h.id: h for h in self._inventario()}
+            hosts = list(self._hosts_base)
+        nombres: dict[str, str] = {}
+        if hasattr(self._driver, "nombres_de_instancias"):
+            try:
+                nombres = self._driver.nombres_de_instancias()
+            except Exception:
+                nombres = {}
+        from concurrent.futures import ThreadPoolExecutor
+
+        def medir(h: Host) -> dict[str, Any]:
+            fila: dict[str, Any] = {
+                "host": h.id, "zona": h.zona_disponibilidad,
+                "vcpu_asignadas": asignado[h.id].vcpu_usados if h.id in asignado else 0,
+                "vcpu_total": h.capacidad_vcpu,
+                "ram_asignada_mb": asignado[h.id].ram_usados_mb if h.id in asignado else 0,
+                "ram_total_mb": h.capacidad_ram_mb}
+            try:
+                u = medidor.medir(h.id, destino_ssh(h.id, h.uri_libvirt), intervalo_s)
+            except ErrorMedicion as exc:
+                fila["error"] = str(exc)
+                return fila
+            fila.update({"cpu_pct": u.cpu_pct, "ram_usada_mb": u.ram_usada_mb,
+                         "ram_fisica_mb": u.ram_total_mb,
+                         "vms": [{"vm": nombres.get(v.dominio, v.dominio), "dominio": v.dominio,
+                                  "vcpu": v.vcpu, "cpu_pct": v.cpu_pct,
+                                  "ram_asignada_mb": v.ram_asignada_mb,
+                                  "ram_usada_mb": v.ram_usada_mb, "ram_origen": v.ram_origen}
+                                 for v in u.vms]})
+            return fila
+
+        with ThreadPoolExecutor(max_workers=max(1, len(hosts))) as ex:
+            filas = list(ex.map(medir, hosts))      # los hosts se miden a la vez
+        return {"intervalo_s": intervalo_s, "hosts": filas}
 
     def listar_imagenes(self) -> list[dict[str, Any]]:
         with self._lock:

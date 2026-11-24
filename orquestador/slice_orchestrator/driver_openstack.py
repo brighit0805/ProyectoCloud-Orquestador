@@ -487,6 +487,14 @@ class DriverOpenStack:
         self.imagen_por_nombre[nombre] = imagen_id
         return imagen_id
 
+    def nombres_de_instancias(self) -> dict[str, str]:
+        """{nombre libvirt 'instance-000000xx': nombre de la VM en Nova}, para que
+        el monitoreo muestre nombres legibles en vez de los del hipervisor."""
+        r = self._api("admin", "GET", self.config.nova + "/servers/detail",
+                      params={"all_tenants": "true"})
+        return {s["OS-EXT-SRV-ATTR:instance_name"]: s["name"]
+                for s in r.json().get("servers", []) if s.get("OS-EXT-SRV-ATTR:instance_name")}
+
     def borrar_imagen(self, nombre: str, imagen_id: str | None = None) -> bool:
         """Borra de Glance una imagen subida con ``subir_imagen``. Si no se da el
         id, la busca por nombre. Devuelve True si borró algo (idempotente: si ya
