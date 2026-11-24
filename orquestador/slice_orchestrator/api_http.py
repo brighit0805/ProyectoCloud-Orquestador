@@ -10,6 +10,14 @@ Endpoints:
     POST /slices                             crea (y opcionalmente despliega) un slice
     GET  /slices/<id>                        detalle (admin puede ver cualquiera)
     DELETE /slices/<id>                      elimina (admin puede eliminar cualquiera)
+    POST /slices/<id>/desplegar              encola el despliegue -> 202 {trabajo}
+    DELETE /slices/<id>?asincrono=1          encola la eliminación -> 202 {trabajo}
+    GET  /trabajos                           sus trabajos (admin + ?todos=1 -> de todos)
+    GET  /trabajos/<id>                      estado de un trabajo (pendiente, en_curso...)
+
+Con ``"asincrono": true`` en el cuerpo de POST /slices (y ``"desplegar": true``),
+el slice se crea como borrador y su despliegue se encola: responde 202 al
+instante en lugar de esperar a que terminen las VMs (cola de trabajos, R1).
     GET  /recursos                           consumo de recursos (propio)
     POST /mantenimiento/limpiar-residuos     SOLO admin
 
@@ -118,9 +126,22 @@ class Handler(BaseHTTPRequestHandler):
                 cuerpo = self._leer_json()
                 desplegar = bool(cuerpo.pop("desplegar", False))
                 estrategia = cuerpo.pop("estrategia", "objetivo")
+                asincrono = bool(cuerpo.pop("asincrono", False))
+                if desplegar and asincrono:
+                    borrador = _svc.crear_slice(sesion["usuario"], cuerpo)
+                    trabajo = _svc.encolar_despliegue(sesion["usuario"], borrador["id"], estrategia)
+                    self._enviar_json(202, {"slice": borrador, "trabajo": trabajo})
+                    return
                 resultado = _svc.crear_slice(sesion["usuario"], cuerpo, desplegar=desplegar,
                                               estrategia=estrategia)
                 self._enviar_json(201, resultado)
+            elif ruta.startswith("/slices/") and ruta.endswith("/desplegar"):
+                sesion = self._sesion()
+                slice_id = ruta[len("/slices/"):-len("/desplegar")]
+                cuerpo = self._leer_json()
+                trabajo = _svc.encolar_despliegue(sesion["usuario"], slice_id,
+                                                  cuerpo.get("estrategia", "objetivo"))
+                self._enviar_json(202, trabajo)
             elif ruta == "/mantenimiento/limpiar-residuos":
                 sesion = self._sesion()
                 exigir_rol(sesion, "admin")
@@ -152,18 +173,30 @@ class Handler(BaseHTTPRequestHandler):
             elif ruta == "/recursos":
                 sesion = self._sesion()
                 self._enviar_json(200, _svc.consumo_recursos(sesion["usuario"]))
+            elif ruta == "/trabajos":
+                sesion = self._sesion()
+                todos = sesion["rol"] == "admin" and qs.get("todos", ["0"])[0] == "1"
+                self._enviar_json(200, _svc.listar_trabajos(sesion["usuario"], todos=todos))
+            elif ruta.startswith("/trabajos/"):
+                sesion = self._sesion()
+                self._enviar_json(200, _svc.ver_trabajo(sesion["usuario"], ruta[len("/trabajos/"):],
+                                                        admin=sesion["rol"] == "admin"))
             else:
                 self._enviar_json(404, {"error": f"Ruta no encontrada: GET {ruta}"})
         except Exception as exc:  # noqa: BLE001
             self._responder_error(exc)
 
     def do_DELETE(self) -> None:  # noqa: N802
-        ruta = urlparse(self.path).path
+        partes = urlparse(self.path)
+        ruta, qs = partes.path, parse_qs(partes.query)
         try:
             if ruta.startswith("/slices/"):
                 sesion = self._sesion()
                 slice_id = ruta[len("/slices/"):]
-                if sesion["rol"] == "admin":
+                if qs.get("asincrono", ["0"])[0] == "1":
+                    self._enviar_json(202, _svc.encolar_eliminacion(
+                        sesion["usuario"], slice_id, admin=sesion["rol"] == "admin"))
+                elif sesion["rol"] == "admin":
                     self._enviar_json(200, _svc.eliminar_slice_admin(slice_id))
                 else:
                     self._enviar_json(200, _svc.eliminar_slice(sesion["usuario"], slice_id))

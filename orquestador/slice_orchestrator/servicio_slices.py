@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import composicion, direccionamiento, network_manager, serializacion
+from .cola_trabajos import ColaTrabajos, ErrorCola
 from .driver_linux import DriverLinux
 from .persistencia_sqlite import AlmacenSQLite, ErrorAlmacen, es_ruta_sqlite
 import config_cluster as cfg_cluster
@@ -142,6 +143,7 @@ class ServicioSlices:
                  driver: Any | None = None,
                  reloj: Callable[[], float] = time.time):
         self._lock = threading.RLock()
+        self._cola_trabajos: ColaTrabajos | None = None
         self._ruta = Path(ruta_estado) if ruta_estado else None
         self._hosts_base = hosts if hosts is not None else inventario_simulado()
         self._driver = driver if driver is not None else DriverLinux()
@@ -687,6 +689,60 @@ class ServicioSlices:
             self._guardar()
             logger.info("[%s] eliminó %s", usuario, slice_id)
             return {"id": slice_id, "estado": EstadoSlice.ELIMINADO.value}
+
+    # ------------------------------------------------------------------
+    # Cola de trabajos (R1): despliegues y eliminaciones asíncronos
+    # ------------------------------------------------------------------
+    def _cola(self) -> ColaTrabajos:
+        with self._lock:
+            if self._cola_trabajos is None:
+                self._cola_trabajos = ColaTrabajos(
+                    {"desplegar": lambda t: self.desplegar_slice(
+                        t.parametros["owner"], t.slice_id, t.parametros.get("estrategia", "objetivo")),
+                     "eliminar": lambda t: self.eliminar_slice(t.parametros["owner"], t.slice_id)},
+                    trabajadores=int(os.environ.get("ORQ_COLA_TRABAJADORES", "1")),
+                    max_pendientes_por_usuario=int(os.environ.get("ORQ_COLA_MAX_POR_USUARIO", "5")))
+            return self._cola_trabajos
+
+    def _encolar(self, tipo: str, usuario: str, slc: Slice, **parametros: Any) -> dict[str, Any]:
+        try:
+            return self._cola().encolar(tipo, usuario, slc.id, owner=slc.owner, **parametros)
+        except ErrorCola as exc:
+            raise ErrorServicio(str(exc)) from None
+
+    def encolar_despliegue(self, usuario: str, slice_id: str,
+                           estrategia: str = "objetivo") -> dict[str, Any]:
+        """Valida y encola el despliegue; responde al instante con el trabajo."""
+        usuario = self._usuario(usuario)
+        with self._lock:
+            slc = self._propio(usuario, slice_id)
+            if slc.estado not in (EstadoSlice.BORRADOR, EstadoSlice.ERROR):
+                raise ErrorServicio(f"El slice ya está '{slc.estado.value}'")
+            return self._encolar("desplegar", usuario, slc, estrategia=estrategia)
+
+    def encolar_eliminacion(self, usuario: str, slice_id: str, admin: bool = False) -> dict[str, Any]:
+        """Encola la eliminación. Con ``admin`` puede ser un slice de otro usuario."""
+        usuario = self._usuario(usuario)
+        with self._lock:
+            if admin:
+                slc = self._slices.get(slice_id)
+                if slc is None:
+                    raise NoEncontrado(f"El slice '{slice_id}' no existe")
+            else:
+                slc = self._propio(usuario, slice_id)
+            return self._encolar("eliminar", usuario, slc)
+
+    def ver_trabajo(self, usuario: str, trabajo_id: str, admin: bool = False) -> dict[str, Any]:
+        t = self._cola().obtener(trabajo_id)
+        if t is None or not (admin or usuario in (t["usuario"], t["parametros"].get("owner"))):
+            raise NoEncontrado(f"El trabajo '{trabajo_id}' no existe o no le pertenece")
+        return t
+
+    def listar_trabajos(self, usuario: str, todos: bool = False) -> list[dict[str, Any]]:
+        return self._cola().listar(None if todos else self._usuario(usuario))
+
+    def esperar_trabajo(self, trabajo_id: str, timeout: float | None = None) -> dict[str, Any]:
+        return self._cola().esperar(trabajo_id, timeout)
 
     # ------------------------------------------------------------------
     # Operaciones de administración (R1C — solo para el rol 'admin' de la
