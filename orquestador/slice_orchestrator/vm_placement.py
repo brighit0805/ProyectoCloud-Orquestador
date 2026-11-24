@@ -30,8 +30,12 @@ from .models import Slice, Host
 from .scheduler import (
     Scheduler, ConfigScheduler, ResultadoScheduler,
     PERFIL_AFINIDAD_TOPOLOGICA, PERFIL_BALANCEADO, PERFIL_DISTRIBUIDO,
-    FILTROS_POR_DEFECTO,
+    FILTROS_POR_DEFECTO, REGISTRO_RESERVAS,
 )
+
+
+def _clave_reserva(slc: Slice, nodo_id: str) -> str:
+    return f"{slc.id}/{nodo_id}"
 
 
 class EstrategiaPlacement(str, Enum):
@@ -171,7 +175,11 @@ def confirmar_asignacion(slc: Slice, hosts: list[Host], asignacion: dict[str, st
     """Aplica la asignacion calculada: escribe host_id en cada nodo del
     slice y descuenta la capacidad usada en los hosts reales (los
     mismos objetos que use el resto del sistema, para que el
-    inventario quede consistente)."""
+    inventario quede consistente).
+
+    Tambien registra cada VM como reserva reciente (scheduler.RegistroReservas):
+    si el siguiente slice se programa antes de que el driver muestre estas VMs,
+    el monitor igual las cuenta (congestion futura)."""
     hosts_por_id = {h.id: h for h in hosts}
     for nodo in slc.nodos:
         host_id = asignacion[nodo.id]
@@ -179,6 +187,8 @@ def confirmar_asignacion(slc: Slice, hosts: list[Host], asignacion: dict[str, st
         host = hosts_por_id[host_id]
         host.vcpu_usados += nodo.vcpu
         host.ram_usados_mb += nodo.ram_mb
+        REGISTRO_RESERVAS.reservar(_clave_reserva(slc, nodo.id), host_id,
+                                   nodo.vcpu, nodo.ram_mb, nodo.disco_gb)
 
 
 def liberar_asignacion(slc: Slice, hosts: list[Host]) -> None:
@@ -188,6 +198,7 @@ def liberar_asignacion(slc: Slice, hosts: list[Host]) -> None:
     segundo descuento accidental durante un reintento de eliminacion.
     """
     hosts_por_id = {h.id: h for h in hosts}
+    REGISTRO_RESERVAS.liberar(_clave_reserva(slc, n.id) for n in slc.nodos)
     for nodo in slc.nodos:
         if nodo.host_id is None:
             continue

@@ -103,6 +103,10 @@ class ConfigOpenStack:
     password_admin: str = field(default="", repr=False)
     rol_admin_id: str = ""
     version_compute: str = "2.87"
+    # R5: red física (physnet de ML2) para crear las redes de enlace como
+    # redes PROVIDER VLAN con la VLAN que asigna el orquestador. Vacío = como
+    # antes (red de proyecto; Neutron elige la VLAN de su rango).
+    red_fisica_provider: str = ""
 
     @property
     def keystone(self) -> str:
@@ -141,6 +145,7 @@ class ConfigOpenStack:
             password_admin=e.get("ADMIN_USER_PASSWORD", ""),
             rol_admin_id=e.get("ADMIN_ROLE_ID", ""),
             version_compute=e.get("COMPUTE_API_VERSION", "2.87"),
+            red_fisica_provider=e.get("PROVIDER_PHYSNET", ""),
         )
 
     def faltantes(self) -> list[str]:
@@ -397,7 +402,12 @@ class DriverOpenStack:
     def crear_red(self, host_uri: str, nombre_red: str, vlan_id: int) -> str:
         """Crea la red del enlace y su subred /30. Es idempotente y global al
         proyecto: el orquestador la pide una vez por host extremo, aquí solo se
-        crea la primera vez. La VLAN real la asigna Neutron (tenant network)."""
+        crea la primera vez.
+
+        Si ``config.red_fisica_provider`` (PROVIDER_PHYSNET) está definido, la
+        red se crea como provider VLAN sobre esa red física, con ``vlan_id``
+        como segmentation_id (R5: "redes provider, no self-service"). Si no,
+        es una red de proyecto y la VLAN la asigna Neutron."""
         self._registrar("crear_red", host_uri, nombre_red)
         self._proyecto()
         if nombre_red in self._redes:
@@ -405,9 +415,14 @@ class DriverOpenStack:
         c = self.config
         red_id = self._buscar("networks", nombre_red, "networks")
         if red_id is None:
+            red = {"name": nombre_red, "project_id": self.proyecto_id,
+                   "port_security_enabled": False}
+            if c.red_fisica_provider:
+                red.update({"provider:network_type": "vlan",
+                            "provider:physical_network": c.red_fisica_provider,
+                            "provider:segmentation_id": int(vlan_id)})
             r = self._api("admin", "POST", c.neutron + "/networks", esperado=(201,),
-                          cuerpo={"network": {"name": nombre_red, "project_id": self.proyecto_id,
-                                              "port_security_enabled": False}})
+                          cuerpo={"network": red})
             red_id = r.json()["network"]["id"]
         sub_nombre = f"{nombre_red}_subnet"
         sub_id = self._buscar("subnets", sub_nombre, "subnets")

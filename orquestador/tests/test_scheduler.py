@@ -26,7 +26,7 @@ from slice_orchestrator.scheduler import (
     PesadorBalanceVCPU, PesadorBalanceRAM, PesadorAfinidadTopologica,
     PesadorAntiAfinidad,
     FILTROS_POR_DEFECTO, PERFIL_BALANCEADO, PERFIL_AFINIDAD_TOPOLOGICA,
-    PERFIL_DISTRIBUIDO,
+    PERFIL_DISTRIBUIDO, REGISTRO_RESERVAS,
 )
 from slice_orchestrator.vm_placement import (
     EstrategiaPlacement, asignar_hosts, confirmar_asignacion,
@@ -271,6 +271,9 @@ class TestSchedulerOvercommit(unittest.TestCase):
             overcommit_vcpu=4.0,
             overcommit_ram=1.0,
             monitorear=False,
+            # Esta prueba mide solo el filtro de overcommit; el limite por
+            # congestion futura (SLA) se prueba en test_congestion_futura.py.
+            modelo_congestion=False,
         )
         sched = Scheduler(config=config)
         resultado = sched.programar(slc, hosts)
@@ -338,6 +341,9 @@ class _DriverFalso:
 
 
 class TestResourceMonitor(unittest.TestCase):
+    def setUp(self):
+        REGISTRO_RESERVAS.limpiar()
+
     def test_refresca_uso(self):
         hosts = _hosts_3workers()
         hosts_reales = _hosts_3workers()
@@ -433,6 +439,9 @@ class TestFachadaObjetivo(unittest.TestCase):
 
 
 class TestFachadaMonitorReal(unittest.TestCase):
+    def setUp(self):
+        REGISTRO_RESERVAS.limpiar()
+
     def test_objetivo_con_driver_simulado(self):
         """El scheduler puede usar un driver para leer estado real."""
         hosts = _hosts_3workers()

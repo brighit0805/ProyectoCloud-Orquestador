@@ -58,7 +58,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import composicion, direccionamiento, network_manager, serializacion
+from . import composicion, control_broadcast, direccionamiento, network_manager, serializacion
+from .cola_trabajos import ColaTrabajos, ErrorCola
 from .driver_linux import DriverLinux
 from .persistencia_sqlite import AlmacenSQLite, ErrorAlmacen, es_ruta_sqlite
 import config_cluster as cfg_cluster
@@ -142,6 +143,7 @@ class ServicioSlices:
                  driver: Any | None = None,
                  reloj: Callable[[], float] = time.time):
         self._lock = threading.RLock()
+        self._cola_trabajos: ColaTrabajos | None = None
         self._ruta = Path(ruta_estado) if ruta_estado else None
         self._hosts_base = hosts if hosts is not None else inventario_simulado()
         self._driver = driver if driver is not None else DriverLinux()
@@ -302,6 +304,30 @@ class ServicioSlices:
             if slc.estado == EstadoSlice.ACTIVO:
                 alloc.restaurar(slc.id, [e.vlan_id for e in slc.enlaces if e.vlan_id is not None])
         return alloc
+
+    def _actualizar_control_broadcast(self) -> dict | None:
+        """R5: recalcula el plan de broadcast con TODOS los slices activos y
+        se lo pasa al driver (si sabe aplicarlo). De mejor esfuerzo: un error
+        aquí se registra, pero no deshace el cambio que lo disparó."""
+        if not hasattr(self._driver, "aplicar_control_broadcast"):
+            return None
+        plan = control_broadcast.calcular_plan(self._slices.values())
+        cfg = control_broadcast.ConfigBroadcast.desde_modulo(cfg_cluster)
+        uris = {h.id: h.uri_libvirt for h in self._hosts_base}
+        try:
+            reporte = self._driver.aplicar_control_broadcast(plan, cfg, uris)
+        except Exception as exc:      # noqa: BLE001 -- nunca debe tumbar el ciclo de vida
+            logger.warning("Control de broadcast no aplicado: %s", exc)
+            return None
+        for err in reporte.get("errores", []):
+            logger.warning("Control de broadcast: %s", err)
+        return reporte
+
+    def estado_broadcast(self) -> list[dict[str, Any]]:
+        """Por servidor: VLANs con VMs, cuáles cruzan el uplink (las que tienen
+        VMs en otro servidor) y cuántos puertos de VM tienen storm control."""
+        with self._lock:
+            return control_broadcast.calcular_plan(self._slices.values()).resumen()
 
     def _validar_imagenes(self, slc: Slice) -> None:
         for n in slc.nodos:
@@ -523,6 +549,7 @@ class ServicioSlices:
                     raise ErrorServicio(f"No se pudo editar en vivo: {exc}") from None
                 self._slices[slice_id] = trabajo
                 self._guardar()
+                self._actualizar_control_broadcast()
                 logger.info("[%s] editó en vivo %s (%d operaciones)", usuario, slice_id, len(operaciones))
                 return self.ver_slice(usuario, slice_id)
 
@@ -638,6 +665,7 @@ class ServicioSlices:
                 logger.error("[%s] despliegue de %s falló: %s", usuario, slice_id, exc)
                 raise ErrorServicio(f"No se pudo desplegar: {exc}") from None
             self._guardar()
+            self._actualizar_control_broadcast()
             logger.info("[%s] desplegó %s", usuario, slice_id)
             return self.ver_slice(usuario, slice_id)
 
@@ -680,13 +708,70 @@ class ServicioSlices:
         usuario = self._usuario(usuario)
         with self._lock:
             slc = self._propio(usuario, slice_id)
-            if slc.estado == EstadoSlice.ACTIVO:
+            estaba_activo = slc.estado == EstadoSlice.ACTIVO
+            if estaba_activo:
                 eliminar_slice(slc, self._inventario(), self._driver, self._allocator())
             del self._slices[slice_id]
             self._tokens = {h: t for h, t in self._tokens.items() if t["slice_id"] != slice_id}
             self._guardar()
+            if estaba_activo:
+                self._actualizar_control_broadcast()
             logger.info("[%s] eliminó %s", usuario, slice_id)
             return {"id": slice_id, "estado": EstadoSlice.ELIMINADO.value}
+
+    # ------------------------------------------------------------------
+    # Cola de trabajos (R1): despliegues y eliminaciones asíncronos
+    # ------------------------------------------------------------------
+    def _cola(self) -> ColaTrabajos:
+        with self._lock:
+            if self._cola_trabajos is None:
+                self._cola_trabajos = ColaTrabajos(
+                    {"desplegar": lambda t: self.desplegar_slice(
+                        t.parametros["owner"], t.slice_id, t.parametros.get("estrategia", "objetivo")),
+                     "eliminar": lambda t: self.eliminar_slice(t.parametros["owner"], t.slice_id)},
+                    trabajadores=int(os.environ.get("ORQ_COLA_TRABAJADORES", "1")),
+                    max_pendientes_por_usuario=int(os.environ.get("ORQ_COLA_MAX_POR_USUARIO", "5")))
+            return self._cola_trabajos
+
+    def _encolar(self, tipo: str, usuario: str, slc: Slice, **parametros: Any) -> dict[str, Any]:
+        try:
+            return self._cola().encolar(tipo, usuario, slc.id, owner=slc.owner, **parametros)
+        except ErrorCola as exc:
+            raise ErrorServicio(str(exc)) from None
+
+    def encolar_despliegue(self, usuario: str, slice_id: str,
+                           estrategia: str = "objetivo") -> dict[str, Any]:
+        """Valida y encola el despliegue; responde al instante con el trabajo."""
+        usuario = self._usuario(usuario)
+        with self._lock:
+            slc = self._propio(usuario, slice_id)
+            if slc.estado not in (EstadoSlice.BORRADOR, EstadoSlice.ERROR):
+                raise ErrorServicio(f"El slice ya está '{slc.estado.value}'")
+            return self._encolar("desplegar", usuario, slc, estrategia=estrategia)
+
+    def encolar_eliminacion(self, usuario: str, slice_id: str, admin: bool = False) -> dict[str, Any]:
+        """Encola la eliminación. Con ``admin`` puede ser un slice de otro usuario."""
+        usuario = self._usuario(usuario)
+        with self._lock:
+            if admin:
+                slc = self._slices.get(slice_id)
+                if slc is None:
+                    raise NoEncontrado(f"El slice '{slice_id}' no existe")
+            else:
+                slc = self._propio(usuario, slice_id)
+            return self._encolar("eliminar", usuario, slc)
+
+    def ver_trabajo(self, usuario: str, trabajo_id: str, admin: bool = False) -> dict[str, Any]:
+        t = self._cola().obtener(trabajo_id)
+        if t is None or not (admin or usuario in (t["usuario"], t["parametros"].get("owner"))):
+            raise NoEncontrado(f"El trabajo '{trabajo_id}' no existe o no le pertenece")
+        return t
+
+    def listar_trabajos(self, usuario: str, todos: bool = False) -> list[dict[str, Any]]:
+        return self._cola().listar(None if todos else self._usuario(usuario))
+
+    def esperar_trabajo(self, trabajo_id: str, timeout: float | None = None) -> dict[str, Any]:
+        return self._cola().esperar(trabajo_id, timeout)
 
     # ------------------------------------------------------------------
     # Operaciones de administración (R1C — solo para el rol 'admin' de la

@@ -1,0 +1,54 @@
+[
+  {
+    "nombre_caso": "Selección de host por CPU/RAM/Disco suficientes (Linux)",
+    "nombre": "vm-web",
+    "cpu": 4,
+    "ram": 4096,
+    "disco": 50,
+    "plataforma": "linux",
+    "inventario_demo": [
+      {"id": "worker1", "capacidad_vcpu": 16, "capacidad_ram_mb": 32768, "capacidad_disco_gb": 40},
+      {"id": "worker2", "capacidad_vcpu": 16, "capacidad_ram_mb": 32768, "capacidad_disco_gb": 100},
+      {"id": "worker3", "capacidad_vcpu": 16, "capacidad_ram_mb": 32768, "capacidad_disco_gb": 100}
+    ]
+  },
+  {
+    "nombre_caso": "Elección de zona de disponibilidad + bandera de seguridad (OpenStack)",
+    "nombre": "vm-db",
+    "cpu": 2,
+    "ram": 2048,
+    "plataforma": "openstack",
+    "zone": "az-prod",
+    "etiquetas": {"requiere_acceso_internet": true}
+  },
+  {
+    "nombre_caso": "Fallback por falta de recursos (Linux, ningún host alcanza)",
+    "nombre": "vm-gigante",
+    "cpu": 999,
+    "ram": 999999,
+    "plataforma": "linux"
+  },
+  {
+    "nombre_caso": "Selección correcta de plataforma -- misma VM en Linux",
+    "nombre": "vm-equivalente",
+    "cpu": 2,
+    "ram": 2048,
+    "plataforma": "linux"
+  },
+  {
+    "nombre_caso": "Selección correcta de plataforma -- misma VM en OpenStack",
+    "nombre": "vm-equivalente",
+    "cpu": 2,
+    "ram": 2048,
+    "plataforma": "openstack",
+    "zone": "az-prod"
+  },
+  {
+    "nombre_caso": "Anti-afinidad simplificada por etiqueta 'evitar_hosts' (Linux)",
+    "nombre": "vm-aislada",
+    "cpu": 2,
+    "ram": 1024,
+    "plataforma": "linux",
+    "etiquetas": {"evitar_hosts": ["worker1", "worker2"]}
+  }
+]

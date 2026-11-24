@@ -324,6 +324,17 @@ def _cmd_zona(svc: ServicioSlices, a: argparse.Namespace) -> None:
                                   ["zona", "hosts"]))
 
 
+def _cmd_red(svc: ServicioSlices, a: argparse.Namespace) -> None:
+    if a.sub == "broadcast":
+        datos = svc.estado_broadcast()
+        lista = lambda vs: ",".join(map(str, vs)) or "-"
+        _salida(a, datos, _tabla(
+            [[d["host"], lista(d["vlans"]), lista(d["vlans_uplink"]),
+              lista(d["vlans_solo_locales"]), d["puertos_con_storm_control"]] for d in datos],
+            ["host", "VLANs con VMs", "cruzan el uplink", "solo locales", "puertos con storm control"])
+            if datos else "No hay slices activos: ninguna VLAN cruza los uplinks.")
+
+
 def _cmd_recursos(svc: ServicioSlices, a: argparse.Namespace) -> None:
     r = svc.consumo_recursos(a.usuario)
     texto = ["Consumo por host:", _tabla(
@@ -413,6 +424,8 @@ def construir_parser() -> argparse.ArgumentParser:
     sub.add_parser("recursos", help="consumo de recursos del sistema y de sus slices")
     z = sub.add_parser("zona", help="zonas de disponibilidad reales del cluster (hosts por zona)").add_subparsers(dest="sub", required=True)
     z.add_parser("listar", help="lista las zonas detectadas y los hosts de cada una")
+    r = sub.add_parser("red", help="estado de la red del clúster (R5)").add_subparsers(dest="sub", required=True)
+    r.add_parser("broadcast", help="control de broadcast: VLANs por servidor y storm control")
 
     s = sub.add_parser("slice", help="ciclo de vida de slices").add_subparsers(dest="sub", required=True)
     c = s.add_parser("crear", help="crear un slice (BORRADOR; con --desplegar también lo despliega)")
@@ -509,7 +522,7 @@ def main(argv: list[str] | None = None, servicio: ServicioSlices | None = None) 
             raise ErrorServicio("Indique el usuario con --usuario o la variable ORQ_USUARIO")
         {"topologias": _cmd_topologias, "flavors": _cmd_flavors, "slice": _cmd_slice,
          "recursos": _cmd_recursos, "imagen": _cmd_imagen, "consola": _cmd_consola,
-         "zona": _cmd_zona,
+         "zona": _cmd_zona, "red": _cmd_red,
          "mantenimiento": _cmd_mantenimiento}[args.comando](svc, args)
         return 0
     except ErrorServicio as exc:

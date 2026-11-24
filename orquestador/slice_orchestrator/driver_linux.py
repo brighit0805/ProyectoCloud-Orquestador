@@ -70,6 +70,8 @@ class DriverLinux:
     # modo REAL porque nada sabía CUÁLES eran los workers ni cómo conectarse).
     # Solo se usa en modo REAL; en modo SIMULADO queda vacío sin efecto.
     hosts_conocidos: list[Host] = field(default_factory=list)
+    # Último reporte de aplicar_control_broadcast (R5): comandos por host y errores.
+    ultimo_control_broadcast: dict | None = None
 
     # ------------------------------------------------------------ utilidades
     def _registrar(self, accion: str, host_uri: str, recurso: str) -> None:
@@ -347,13 +349,60 @@ class DriverLinux:
         tiene API en libvirt). Falla ruidosamente salvo que el propio comando
         ya sea idempotente (se arma así en los llamadores)."""
         usuario, host = self._usuario_y_host(host_uri)
+        self._ejecutar_ssh(f"{usuario}@{host}", comando)
+
+    @staticmethod
+    def _ejecutar_ssh(destino: str, comando: str) -> None:
         r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                            f"{usuario}@{host}", comando],
-                           capture_output=True, text=True, timeout=30)
+                            destino, comando],
+                           capture_output=True, text=True, timeout=60)
         if r.returncode != 0:
             raise DriverLinuxError(
-                f"No se pudo ejecutar en {host}: {comando!r} -> rc={r.returncode} "
+                f"No se pudo ejecutar en {destino}: {comando!r} -> rc={r.returncode} "
                 f"stderr={r.stderr.strip()}")
+
+    # --------------------------------------------- control de broadcast (R5)
+    def aplicar_control_broadcast(self, plan, cfg, uri_por_host: dict[str, str]) -> dict:
+        """Deja los bridges OVS (y ovs1, si está configurado) en el estado del
+        plan de ``control_broadcast``: poda de VLANs en uplinks y storm control
+        por puerto de VM. Se llama con el plan COMPLETO tras cada cambio, así
+        que es idempotente.
+
+        Es de mejor esfuerzo: si un servidor falla, se reporta y se sigue con
+        los demás; nunca revierte un slice ya desplegado por esto."""
+        from .control_broadcast import comandos_host, comandos_switch
+
+        reporte: dict = {"hosts": {}, "switch": None, "errores": []}
+        hosts = sorted(set(plan.vlans_por_host) | set(cfg.bridge_por_host))
+        for host in hosts:
+            cmds = comandos_host(host, plan, cfg)
+            if not cmds:
+                continue
+            uri = uri_por_host.get(host)
+            self.historial.append(("control_broadcast", uri or host, host))
+            reporte["hosts"][host] = cmds
+            if self.modo == ModoDriver.SIMULADO:
+                logger.info("[SIMULADO] control_broadcast %s: %d comandos", host, len(cmds))
+                continue
+            try:
+                if uri is None:
+                    raise DriverLinuxError(f"sin URI conocida para {host}")
+                self._ejecutar_remoto(uri, " && ".join(cmds))
+            except DriverLinuxError as exc:
+                logger.warning("Control de broadcast no aplicado en %s: %s", host, exc)
+                reporte["errores"].append(f"{host}: {exc}")
+        cmds = comandos_switch(plan, cfg)
+        if cmds:
+            reporte["switch"] = cmds
+            self.historial.append(("control_broadcast", cfg.switch.destino_ssh, "switch"))
+            if self.modo == ModoDriver.REAL:
+                try:
+                    self._ejecutar_ssh(cfg.switch.destino_ssh, " && ".join(cmds))
+                except DriverLinuxError as exc:
+                    logger.warning("Poda de VLANs en el switch no aplicada: %s", exc)
+                    reporte["errores"].append(f"switch: {exc}")
+        self.ultimo_control_broadcast = reporte
+        return reporte
 
     def configurar_ssh_entrante(self, host_uri: str, red_libvirt: str, mac_acceso: str,
                                  puerto_externo: int, intentos: int = 10,
@@ -647,3 +696,36 @@ class DriverLinux:
                 overcommit_vcpu=host.overcommit_vcpu, overcommit_ram=host.overcommit_ram,
             ))
         return resultado
+
+    # ------------------------------------------- reconciliación (Lab 7, 23-nov)
+    def verificar_vm(self, host_uri: str, nombre_vm: str) -> str:
+        """Consulta el estado REAL de la VM en libvirt (D) Monitoreo /
+        DeploymentVerifier-Reconciler, ver monitor_reconciliador.py).
+
+        A diferencia de DriverOpenStack, DriverLinux no necesita esto para
+        confirmar una creación recién hecha (crear_vm() es síncrona: no
+        retorna hasta que la VM existe o lanza excepción). Pero el
+        reconciliador lo necesita igual para una pasada POSTERIOR sobre
+        slices ya desplegados, por si una VM se cayó o la borraron por
+        fuera del orquestador (p. ej. directo con 'virsh destroy').
+
+        Devuelve "ACTIVE" si el dominio existe y está corriendo, "SHUTOFF"
+        si existe pero está apagado, y "ERROR" si ya no existe -- mismos
+        valores que usa DriverOpenStack.verificar_vm(), para que el
+        reconciliador trate ambos drivers igual.
+
+        En modo SIMULADO no hay libvirt real: se responde con el registro
+        interno (self.vms_simuladas) en vez de levantar una excepción, para
+        que el reconciliador se pueda probar y demostrar sin clúster real."""
+        if self.modo == ModoDriver.SIMULADO:
+            return "ACTIVE" if (host_uri, nombre_vm) in self.vms_simuladas else "ERROR"
+        libvirt = self._libvirt()
+        conn = self._conectar(host_uri)
+        try:
+            try:
+                dom = conn.lookupByName(nombre_vm)
+            except libvirt.libvirtError:
+                return "ERROR"
+            return "ACTIVE" if dom.isActive() else "SHUTOFF"
+        finally:
+            conn.close()
