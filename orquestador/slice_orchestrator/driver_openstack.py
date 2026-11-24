@@ -472,6 +472,23 @@ class DriverOpenStack:
         self.imagen_por_nombre[nombre] = imagen_id
         return imagen_id
 
+    def borrar_imagen(self, nombre: str, imagen_id: str | None = None) -> bool:
+        """Borra de Glance una imagen subida con ``subir_imagen``. Si no se da el
+        id, la busca por nombre. Devuelve True si borró algo (idempotente: si ya
+        no existe, devuelve False)."""
+        c = self.config
+        ids = [imagen_id] if imagen_id else [
+            i["id"] for i in self._api("admin", "GET", c.glance + "/images",
+                                       params={"name": nombre}).json().get("images", [])
+            if i.get("name") == nombre]
+        borro = False
+        for id_ in ids:
+            r = self._api("admin", "DELETE", f"{c.glance}/images/{id_}",
+                          esperado=(204,), tolerar=(404,))
+            borro = borro or r.status_code == 204
+        self.imagen_por_nombre.pop(nombre, None)
+        return borro
+
     def sincronizar_catalogo_imagenes(self, forzar: bool = False) -> dict[str, str]:
         """Resuelve automáticamente `imagen_por_nombre` consultando Glance, para
         que el usuario final no tenga que conocer de antemano los IDs: por cada
@@ -1257,4 +1274,10 @@ class SesionSimulada:
         # ---- Glance
         if ruta == "/v2/images" and metodo == "GET":
             return _Resp(200, {"images": list(self.imagenes.values())})
+        if ruta.startswith("/v2/images/") and metodo == "DELETE":
+            iid = ruta.rsplit("/", 1)[1]
+            for k in [k for k, v in self.imagenes.items() if v.get("id") == iid]:
+                del self.imagenes[k]
+                return _Resp(204)
+            return _Resp(404, {"error": "imagen no encontrada"})
         return _Resp(404, {"error": f"ruta no simulada: {metodo} {ruta}"})

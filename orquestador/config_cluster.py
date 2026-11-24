@@ -26,7 +26,13 @@ WORKERS = {
     "server1": {"ip": "192.168.201.1", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
     "server2": {"ip": "192.168.201.2", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
     "server3": {"ip": "192.168.201.3", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
+    "server4": {"ip": "192.168.201.4", "bridge": "br-int"},   # CONFIRMAR IP (por patrón) y bridge real
 }
+
+# Zona de disponibilidad del clúster Linux: agrupa todos los hosts de WORKERS
+# (server1..server4). Para el examen (Ex2) basta con quitar "server1" de WORKERS
+# o usar otro nombre de zona aquí.
+ZONA_LINUX = "az-lab"
 
 # Imágenes base que deben existir en el pool de CADA server
 IMAGENES_BASE = ["cirros-0.6.2.qcow2", "ubuntu-22.04.qcow2"]

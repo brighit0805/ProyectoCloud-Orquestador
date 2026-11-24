@@ -17,7 +17,7 @@ Uso (desde la carpeta ``orquestador``):
     python -m slice_orchestrator.cli -u ana slice listar
     python -m slice_orchestrator.cli --help
 
-El estado se guarda en ``estado_r1b.json`` (o en ``--estado``/``ORQ_ESTADO``), de
+El estado se guarda en ``estado_r1b.db`` (SQLite; o en ``--estado``/``ORQ_ESTADO``), de
 modo que varias invocaciones y varios usuarios comparten la misma "infraestructura".
 
 El backend se elige con ``--driver`` (o la variable ``ORQ_DRIVER``):
@@ -69,7 +69,8 @@ def _construir_servicio_linux_real(ruta_estado: str) -> ServicioSlices:
     from .driver_linux import DriverLinux, ModoDriver
 
     hosts_config = [
-        Host(nombre, nombre, cfg_cluster.uri(nombre), 16, 32768, "az-lab")
+        Host(nombre, nombre, cfg_cluster.uri(nombre), 16, 32768,
+             getattr(cfg_cluster, "ZONA_LINUX", "az-lab"))
         for nombre in cfg_cluster.WORKERS
     ]
     driver = DriverLinux(modo=ModoDriver.REAL, hosts_conocidos=hosts_config,
@@ -113,7 +114,7 @@ def _construir_servicio_openstack_real(ruta_estado: str) -> ServicioSlices:
           file=sys.stderr)
     return ServicioSlices(ruta_estado=ruta_estado, hosts=hosts_reales, driver=driver)
 
-ESTADO_POR_DEFECTO = "estado_r1b.json"
+ESTADO_POR_DEFECTO = "estado_r1b.db"
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +344,10 @@ def _cmd_imagen(svc: ServicioSlices, a: argparse.Namespace) -> None:
         _salida(a, datos, _tabla([[i["nombre"], i["formato"], i["tamano_bytes"] or "-",
                                    i["importada_por"] or "catálogo"] for i in datos],
                                  ["imagen", "formato", "bytes", "origen"]))
+    elif a.sub == "eliminar":
+        r = svc.eliminar_imagen(a.usuario, a.nombre)
+        _salida(a, r, f"Imagen {r['nombre']} eliminada del catálogo"
+                + (" y de la plataforma real." if r["borrada_de_plataforma"] else "."))
     else:
         i = svc.importar_imagen(a.usuario, a.nombre, a.origen)
         base = (f"Imagen {i['nombre']} registrada ({i['tamano_bytes']} bytes, "
@@ -464,7 +469,9 @@ def construir_parser() -> argparse.ArgumentParser:
     i.add_parser("listar")
     x = i.add_parser("importar", help="registra una imagen qcow2 en el catálogo")
     x.add_argument("nombre")
-    x.add_argument("origen", help="ruta del archivo .qcow2")
+    x.add_argument("origen", help="ruta del archivo .qcow2 o .img (formato qcow2)")
+    x = i.add_parser("eliminar", help="quita una imagen importada (y de Glance con el driver real)")
+    x.add_argument("nombre")
 
     k = sub.add_parser("consola", help="tokens de acceso a la consola de una VM").add_subparsers(
         dest="sub", required=True)

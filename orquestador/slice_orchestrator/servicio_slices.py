@@ -32,9 +32,15 @@ con reservas atómicas es el diseño de HLD §2.6, aún no implementado.
 
 Persistencia
 ------------
-Si se pasa ``ruta_estado`` el estado se guarda en un JSON (escritura atómica) tras
-cada cambio y se recarga al crear el servicio. No es la base de datos del HLD
-(§2.4): dos *procesos* escribiendo el mismo archivo se pisarían.
+Si se pasa ``ruta_estado`` el estado se guarda tras cada cambio y se recarga al
+crear el servicio. El almacén depende de la extensión de la ruta:
+
+* ``.db`` / ``.sqlite`` / ``.sqlite3`` -> **SQLite** (``persistencia_sqlite.py``,
+  HLD §6.4): transaccional, consultable con SQL y seguro entre procesos (la CLI y
+  la API pueden usar el mismo archivo). Es el almacén por defecto desde el
+  23-nov-2026, por sugerencia del coach. Si junto a la base existe el JSON
+  anterior (mismo nombre, extensión ``.json``), se migra una sola vez.
+* ``.json`` -> el JSON con escritura atómica de siempre (un solo proceso).
 """
 
 from __future__ import annotations
@@ -54,6 +60,7 @@ from typing import Any, Callable
 
 from . import composicion, direccionamiento, network_manager, serializacion
 from .driver_linux import DriverLinux
+from .persistencia_sqlite import AlmacenSQLite, ErrorAlmacen, es_ruta_sqlite
 import config_cluster as cfg_cluster
 from .models import (
     CATALOGO_FLAVORS,
@@ -80,8 +87,8 @@ PUERTO_VNC_BASE = 5900
 _FIRMA_QCOW2 = b"QFI\xfb"
 
 _RE_USUARIO = re.compile(r"^[A-Za-z0-9._@+-]{1,64}$")
-_RE_NOMBRE_SLICE = re.compile(r"^[a-z0-9][a-z0-9-]{0,29}$")
-_RE_NOMBRE_IMAGEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.qcow2$")
+_RE_NOMBRE_SLICE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$")
+_RE_NOMBRE_IMAGEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.(qcow2|img)$")
 
 _CAMPOS_CAPACIDAD = {"flavor", "vcpu", "ram_mb", "disco_gb", "imagen"}
 
@@ -143,6 +150,15 @@ class ServicioSlices:
         self._contador = 0
         self._imagenes: dict[str, dict[str, Any]] = {}
         self._tokens: dict[str, dict[str, Any]] = {}
+        self._db: AlmacenSQLite | None = None
+        if es_ruta_sqlite(self._ruta):
+            try:
+                self._db = AlmacenSQLite(self._ruta)
+                json_previo = self._ruta.with_suffix(".json")
+                if json_previo.exists():
+                    self._db.migrar_desde_json(json_previo)
+            except ErrorAlmacen as exc:
+                raise ErrorServicio(str(exc)) from None
         self._catalogo_inicial()
         self._cargar()
 
@@ -156,6 +172,17 @@ class ServicioSlices:
                 "tamano_bytes": None, "sha256": None, "importada_por": None})
 
     def _cargar(self) -> None:
+        if self._db is not None:
+            try:
+                datos = self._db.cargar()
+                self._contador = int(datos["contador"])
+                self._slices = {d["id"]: serializacion.slice_desde_dict(d) for d in datos["slices"]}
+                self._imagenes.update({d["nombre"]: d for d in datos["imagenes"]})
+                self._tokens = dict(datos["tokens"])
+            except (ErrorAlmacen, ValueError, KeyError, TypeError) as exc:
+                raise ErrorServicio(
+                    f"No se pudo leer la base de datos {self._ruta}: {exc}") from None
+            return
         if self._ruta is None or not self._ruta.exists():
             return
         try:
@@ -169,7 +196,44 @@ class ServicioSlices:
                 f"No se pudo leer el archivo de estado {self._ruta}: {exc}. "
                 "Revíselo o bórrelo para empezar de cero.") from None
 
+    def _sincronizar(self) -> None:
+        """Incorpora lo que otros procesos escribieron en la base (solo SQLite).
+
+        Se llama al entrar a cada operación. Los slices que cambiaron se
+        actualizan EN SITIO (misma identidad de objeto), para no invalidar
+        referencias que la operación en curso ya tenga.
+        """
+        if self._db is None:
+            return
+        try:
+            d = self._db.refrescar()
+        except ErrorAlmacen as exc:
+            raise ErrorServicio(str(exc)) from None
+        self._contador = max(self._contador, int(d["contador"]))
+        for sid in d["borrados"]:
+            self._slices.pop(sid, None)
+        for datos in d["cambiados"]:
+            nuevo = serializacion.slice_desde_dict(datos)
+            actual = self._slices.get(nuevo.id)
+            if actual is None:
+                self._slices[nuevo.id] = nuevo
+            else:
+                actual.__dict__.update(nuevo.__dict__)
+        self._imagenes = {}
+        self._catalogo_inicial()
+        self._imagenes.update({i["nombre"]: i for i in d["imagenes"]})
+        self._tokens = dict(d["tokens"])
+
     def _guardar(self) -> None:
+        if self._db is not None:
+            try:
+                self._db.guardar(
+                    self._contador,
+                    [serializacion.slice_a_dict(s) for s in self._slices.values()],
+                    list(self._imagenes.values()), self._tokens)
+            except ErrorAlmacen as exc:
+                raise ErrorServicio(str(exc)) from None
+            return
         if self._ruta is None:
             return
         datos = {
@@ -200,12 +264,20 @@ class ServicioSlices:
         return usuario
 
     def _propio(self, usuario: str, slice_id: str) -> Slice:
+        self._sincronizar()
         slc = self._slices.get(slice_id)
         if slc is None or slc.owner != usuario:
             raise NoEncontrado(f"El slice '{slice_id}' no existe o no le pertenece")
         return slc
 
     def _nuevo_id(self) -> str:
+        if self._db is not None:
+            # El contador vive en la base: dos procesos nunca reciben el mismo ID.
+            try:
+                self._contador = self._db.siguiente_id()
+            except ErrorAlmacen as exc:
+                raise ErrorServicio(str(exc)) from None
+            return f"slice-{self._contador:03d}"
         self._contador += 1
         return f"slice-{self._contador:03d}"
 
@@ -365,11 +437,12 @@ class ServicioSlices:
         """Crea un slice BORRADOR (sin reservar recursos) y, si se pide, lo despliega."""
         usuario = self._usuario(usuario)
         with self._lock:
+            self._sincronizar()
             if not isinstance(spec, dict):
                 raise ErrorServicio("La especificación debe ser un objeto JSON")
             nombre = spec.get("nombre")
             if not isinstance(nombre, str) or not _RE_NOMBRE_SLICE.match(nombre):
-                raise ErrorServicio("Nombre inválido: use minúsculas, números y guiones (1 a 30)")
+                raise ErrorServicio("Nombre inválido: use letras, números, guiones y guiones bajos (1 a 30)")
             if any(s.owner == usuario and s.nombre == nombre for s in self._slices.values()):
                 raise ErrorServicio(f"Ya tiene un slice llamado '{nombre}'")
             contador_previo = self._contador
@@ -571,6 +644,7 @@ class ServicioSlices:
     def listar_slices(self, usuario: str) -> list[dict[str, Any]]:
         usuario = self._usuario(usuario)
         with self._lock:
+            self._sincronizar()
             return [{
                 "id": s.id, "nombre": s.nombre, "estado": s.estado.value,
                 "tipo": s.tipo_topologia.value, "nodos": len(s.nodos),
@@ -621,6 +695,7 @@ class ServicioSlices:
     def listar_todos_slices(self) -> list[dict[str, Any]]:
         """Como listar_slices(), pero de TODOS los usuarios (uso admin)."""
         with self._lock:
+            self._sincronizar()
             return [{
                 "id": s.id, "nombre": s.nombre, "owner": s.owner,
                 "estado": s.estado.value, "tipo": s.tipo_topologia.value,
@@ -631,6 +706,7 @@ class ServicioSlices:
     def ver_slice_admin(self, slice_id: str) -> dict[str, Any]:
         """Como ver_slice(), pero sin exigir que el slice sea del admin."""
         with self._lock:
+            self._sincronizar()
             slc = self._slices.get(slice_id)
             if slc is None:
                 raise NoEncontrado(f"El slice '{slice_id}' no existe")
@@ -639,6 +715,7 @@ class ServicioSlices:
     def eliminar_slice_admin(self, slice_id: str) -> dict[str, Any]:
         """Como eliminar_slice(), pero sin exigir que el slice sea del admin."""
         with self._lock:
+            self._sincronizar()
             slc = self._slices.get(slice_id)
             if slc is None:
                 raise NoEncontrado(f"El slice '{slice_id}' no existe")
@@ -660,7 +737,7 @@ class ServicioSlices:
             if nombre is None and isinstance(plantilla, dict):
                 nombre = plantilla.get("nombre_sugerido")
             if not isinstance(nombre, str) or not _RE_NOMBRE_SLICE.match(nombre):
-                raise ErrorServicio("Nombre inválido: use minúsculas, números y guiones (1 a 30)")
+                raise ErrorServicio("Nombre inválido: use letras, números, guiones y guiones bajos (1 a 30)")
             if any(s.owner == usuario and s.nombre == nombre for s in self._slices.values()):
                 raise ErrorServicio(f"Ya tiene un slice llamado '{nombre}'")
             contador_previo = self._contador
@@ -685,6 +762,7 @@ class ServicioSlices:
         los slices del propio usuario."""
         usuario = self._usuario(usuario)
         with self._lock:
+            self._sincronizar()
             hosts = self._inventario()
             disco_por_host: dict[str, float] = {h.id: 0.0 for h in hosts}
             for s in self._slices.values():
@@ -715,6 +793,7 @@ class ServicioSlices:
 
     def listar_imagenes(self) -> list[dict[str, Any]]:
         with self._lock:
+            self._sincronizar()
             return [dict(i) for i in self._imagenes.values()]
 
     def importar_imagen(self, usuario: str, nombre: str, origen: str) -> dict[str, Any]:
@@ -727,8 +806,9 @@ class ServicioSlices:
         """
         usuario = self._usuario(usuario)
         with self._lock:
+            self._sincronizar()
             if not isinstance(nombre, str) or not _RE_NOMBRE_IMAGEN.match(nombre):
-                raise ErrorServicio("Nombre de imagen inválido: use letras, números, . _ - y termine en .qcow2")
+                raise ErrorServicio("Nombre de imagen inválido: use letras, números, . _ - y termine en .qcow2 o .img")
             existente = self._imagenes.get(nombre)
             if existente is not None and existente.get("origen") != "catalogo":
                 raise ErrorServicio(f"La imagen '{nombre}' ya está en el catálogo")
@@ -767,6 +847,36 @@ class ServicioSlices:
             logger.info("[%s] importó la imagen %s (%d bytes)", usuario, nombre, tamano)
             return dict(registro)
 
+    def eliminar_imagen(self, usuario: str, nombre: str) -> dict[str, Any]:
+        """Quita una imagen IMPORTADA del catálogo y, con el driver real que lo
+        soporte, también de la plataforma (Glance). Las del catálogo base no se
+        pueden borrar, ni una imagen que algún slice no eliminado todavía use."""
+        usuario = self._usuario(usuario)
+        with self._lock:
+            self._sincronizar()
+            reg = self._imagenes.get(nombre)
+            if reg is None:
+                raise ErrorServicio(f"La imagen '{nombre}' no está en el catálogo")
+            if reg.get("origen") == "catalogo":
+                raise ErrorServicio(f"'{nombre}' es una imagen del catálogo base y no se puede eliminar")
+            en_uso = sorted({s.id for s in self._slices.values()
+                             if any(n.imagen == nombre for n in s.nodos)})
+            if en_uso:
+                raise ErrorServicio(
+                    f"La imagen '{nombre}' la usan los slices: {', '.join(en_uso)}. "
+                    "Elimínelos primero.")
+            borrada = False
+            if getattr(self._driver, "modo", None) == "real" and hasattr(self._driver, "borrar_imagen"):
+                try:
+                    borrada = bool(self._driver.borrar_imagen(nombre, reg.get("id_plataforma")))
+                except Exception as exc:
+                    raise ErrorServicio(
+                        f"No se pudo borrar la imagen de la plataforma real: {exc}") from None
+            del self._imagenes[nombre]
+            self._guardar()
+            logger.info("[%s] eliminó la imagen %s", usuario, nombre)
+            return {"nombre": nombre, "borrada_de_plataforma": borrada}
+
     # ------------------------------------------------------------------
     # Área D: acceso a consola (HLD §3.8, §5.5)
     # ------------------------------------------------------------------
@@ -788,6 +898,7 @@ class ServicioSlices:
         sigue siendo solo el token simulado, como antes."""
         usuario = self._usuario(usuario)
         with self._lock:
+            self._sincronizar()
             slc = self._propio(usuario, slice_id)
             if slc.estado != EstadoSlice.ACTIVO:
                 raise ErrorServicio("Solo se emite consola de slices activos")
@@ -852,6 +963,7 @@ class ServicioSlices:
         """Valida y CONSUME un token. Lo usaría el proxy de consola; aquí sirve para
         demostrar que es de un solo uso y que caduca."""
         with self._lock:
+            self._sincronizar()
             self._purgar_tokens()
             registro = self._tokens.pop(self._hash_token(str(token)), None)
             if registro is None:

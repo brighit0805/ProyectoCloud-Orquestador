@@ -18,3 +18,8 @@ estado_*.txt
 .env.*
 !.env.example
 .venv/
+estado_*.db
+estado_*.db-wal
+estado_*.db-shm
+*.sqlite
+*.sqlite3

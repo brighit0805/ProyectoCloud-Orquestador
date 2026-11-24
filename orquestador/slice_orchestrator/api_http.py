@@ -47,7 +47,7 @@ _gestor: GestorUsuarios | None = None
 
 
 def _construir_servicio(driver_nombre: str, ruta_estado: str | None) -> ServicioSlices:
-    ruta_estado = ruta_estado or "estado_r1b.json"
+    ruta_estado = ruta_estado or "estado_r1b.db"
     if driver_nombre == "openstack":
         # Reusa exactamente la misma función que ya usa la CLI de R1B para
         # este camino (ver cli.py), así la API y la CLI nunca se desalinean
