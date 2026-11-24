@@ -37,7 +37,9 @@
     <nav class="tabs" role="tablist">
       <button class="tab activo" data-tab="disenar" role="tab" aria-selected="true">Diseñar slice</button>
       <button class="tab" data-tab="slices" role="tab" aria-selected="false">Mis slices</button>
+      <button class="tab" data-tab="trabajos" role="tab" aria-selected="false">Trabajos <span class="contador-chip" id="badge-trabajos"></span></button>
       <button class="tab" data-tab="recursos" role="tab" aria-selected="false">Recursos</button>
+      <button class="tab" data-tab="red" role="tab" aria-selected="false">Red</button>
     </nav>
     <div class="info-sesion">
       <span id="sesion-usuario"></span>
@@ -127,7 +129,7 @@
         </form>
 
         <div class="panel-lateral-acciones">
-          <label class="opcion-desplegar"><input type="checkbox" id="d-desplegar"> Desplegar de inmediato</label>
+          <label class="opcion-desplegar"><input type="checkbox" id="d-desplegar"> Desplegar de inmediato (en cola)</label>
           <button type="button" id="d-crear" class="primario ancho">Crear slice</button>
           <p id="d-mensaje" class="mensaje oculto" role="status"></p>
         </div>
@@ -185,6 +187,34 @@
         </div>
       </div>
     </div>
+  </section>
+
+  <!-- ---------- Tab: Trabajos (cola, R1) ---------- -->
+  <section id="tab-trabajos" class="panel-tab oculto">
+    <div class="encabezado-columna">
+      <h2>Cola de trabajos</h2>
+      <button id="btn-refrescar-trabajos" class="secundario chico">Refrescar</button>
+    </div>
+    <p class="campo-ayuda">Los despliegues y eliminaciones se encolan y se atienden en orden de llegada (FIFO). Esta tabla se actualiza sola.</p>
+    <table id="tabla-trabajos">
+      <thead><tr><th>Trabajo</th><th>Tipo</th><th>Slice</th><th>Usuario</th><th>Estado</th><th>Cola</th><th>Duración</th><th>Detalle</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="trabajos-vacio" class="campo-ayuda oculto">No hay trabajos todavía.</p>
+  </section>
+
+  <!-- ---------- Tab: Red / broadcast (R5) ---------- -->
+  <section id="tab-red" class="panel-tab oculto">
+    <div class="encabezado-columna">
+      <h2>Control de broadcast por servidor</h2>
+      <button id="btn-refrescar-red" class="secundario chico">Refrescar</button>
+    </div>
+    <p class="campo-ayuda">Cada VLAN solo cruza el enlace de un servidor si tiene VMs en otro servidor; las demás quedan locales. Cada puerto de VM tiene límite de broadcast/multicast (storm control).</p>
+    <table id="tabla-red">
+      <thead><tr><th>Servidor</th><th>VLANs con VMs</th><th>Cruzan el uplink</th><th>Solo locales</th><th>Puertos con storm control</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="red-vacio" class="campo-ayuda oculto">No hay slices activos: ninguna VLAN cruza los uplinks.</p>
   </section>
 
   <!-- ---------- Tab: Recursos ---------- -->

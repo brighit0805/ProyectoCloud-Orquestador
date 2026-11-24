@@ -237,6 +237,13 @@ td button { margin-right: .35rem; }
 .estado-BORRADOR { background: var(--warn-fondo); color: var(--warn); border-color: #f3dcb8; }
 .estado-ERROR { background: var(--error-fondo); color: var(--error); border-color: #f3c6c6; }
 .estado-ELIMINADO { background: var(--bg); color: var(--texto-tenue); border-color: var(--borde); }
+/* El API entrega los estados en minúscula: mismas reglas para ambos. */
+.estado-activo, .estado-completado { background: var(--ok-fondo); color: var(--ok); border-color: #bfe3cc; }
+.estado-borrador, .estado-pendiente, .estado-creando { background: var(--warn-fondo); color: var(--warn); border-color: #f3dcb8; }
+.estado-error, .estado-fallido { background: var(--error-fondo); color: var(--error); border-color: #f3c6c6; }
+.estado-eliminado, .estado-borrador-eliminacion { background: var(--bg); color: var(--texto-tenue); border-color: var(--borde); }
+.estado-en_curso { background: var(--acento-tenue); color: var(--acento-fuerte); border-color: #c9dbff; }
+.celda-error { color: var(--error); font-size: .78rem; max-width: 28rem; word-break: break-word; }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 900px) {

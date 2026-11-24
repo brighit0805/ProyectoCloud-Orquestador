@@ -19,6 +19,7 @@ Endpoints:
     DELETE /slices/<id>?asincrono=1          encola la eliminación -> 202 {trabajo}
     GET  /trabajos                           sus trabajos (admin + ?todos=1 -> de todos)
     GET  /trabajos/<id>                      estado de un trabajo (pendiente, en_curso...)
+    GET  /red/broadcast                      control de broadcast: VLANs por servidor (R5)
 
 Con ``"asincrono": true`` en el cuerpo de POST /slices (y ``"desplegar": true``),
 el slice se crea como borrador y su despliegue se encola: responde 202 al
@@ -187,6 +188,9 @@ class Handler(BaseHTTPRequestHandler):
                 sesion = self._sesion()
                 self._enviar_json(200, _svc.ver_trabajo(sesion["usuario"], ruta[len("/trabajos/"):],
                                                         admin=sesion["rol"] == "admin"))
+            elif ruta == "/red/broadcast":
+                self._sesion()
+                self._enviar_json(200, _svc.estado_broadcast())
             elif ruta == "/zonas":
                 self._sesion()
                 self._enviar_json(200, _svc.listar_zonas())

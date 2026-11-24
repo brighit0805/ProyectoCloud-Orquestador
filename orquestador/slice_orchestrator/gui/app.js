@@ -14,7 +14,12 @@
 const estado = {
   token: null, usuario: null, rol: null,
   catalogo: [], zonas: [], slices: [], verTodos: false,
+  trabajos: [],
 };
+
+// Escapa texto del servidor antes de meterlo en innerHTML.
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 const diseno = {
   enlacesQuitados: new Set(),
@@ -62,7 +67,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("form-login").addEventListener("submit", onLogin);
   document.getElementById("btn-salir").addEventListener("click", onSalir);
   document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => activarTab(b.dataset.tab)));
-  document.getElementById("toggle-todos").addEventListener("change", e => { estado.verTodos = e.target.checked; cargarSlices(); });
+  document.getElementById("toggle-todos").addEventListener("change", e => { estado.verTodos = e.target.checked; cargarSlices(); cargarTrabajos(); });
 
   document.getElementById("d-tipo").addEventListener("change", () => onCambioTopologiaBase("tipo"));
   document.getElementById("d-nodos").addEventListener("change", () => onCambioTopologiaBase("nodos"));
@@ -90,6 +95,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("btn-refrescar-slices").addEventListener("click", cargarSlices);
   document.getElementById("btn-refrescar-recursos").addEventListener("click", cargarRecursos);
+  document.getElementById("btn-refrescar-trabajos").addEventListener("click", cargarTrabajos);
+  document.getElementById("btn-refrescar-red").addEventListener("click", cargarBroadcast);
 
   if (estado.token) mostrarApp();
 });
@@ -115,6 +122,7 @@ async function onLogin(ev) {
 }
 
 function onSalir() {
+  detenerSondeo();
   estado.token = null; estado.usuario = null; estado.rol = null;
   try { sessionStorage.removeItem("orq_sesion"); } catch (_) {}
   document.getElementById("vista-app").classList.add("oculto");
@@ -139,6 +147,7 @@ async function mostrarApp() {
   activarTab("disenar");
   cargarSlices();
   cargarRecursos();
+  iniciarSondeo();
 }
 
 function poblarCatalogoYZonas() {
@@ -167,6 +176,8 @@ function activarTab(nombre) {
     b.classList.toggle("activo", activo); b.setAttribute("aria-selected", String(activo));
   });
   document.querySelectorAll(".panel-tab").forEach(p => p.classList.toggle("oculto", p.id !== "tab-" + nombre));
+  if (nombre === "trabajos") cargarTrabajos();
+  if (nombre === "red") cargarBroadcast();
 }
 
 function activarModo(modo) {
@@ -625,12 +636,19 @@ async function onCrearSlice() {
       },
       flavores: {}, acceso_internet: [...diseno.internet], capacidad,
       zona_disponibilidad: zona, desplegar, estrategia: "objetivo",
+      asincrono: desplegar,        // el despliegue se encola (R1) y la API responde al instante
     };
 
     const resultado = await api("POST", "/slices", spec);
-    msg.textContent = `Slice "${resultado.nombre}" creado (${resultado.estado}).`;
+    if (resultado.trabajo) {
+      const t = resultado.trabajo;
+      msg.textContent = `Slice "${resultado.slice.nombre}" creado; despliegue en cola ` +
+        `(${t.id}, ${t.posicion ? "posición " + t.posicion : "en curso"}). Sigue el avance en la pestaña Trabajos.`;
+    } else {
+      msg.textContent = `Slice "${resultado.nombre}" creado (${resultado.estado}).`;
+    }
     msg.className = "mensaje ok";
-    cargarSlices(); cargarRecursos();
+    cargarSlices(); cargarRecursos(); cargarTrabajos();
   } catch (e) {
     msg.textContent = e.message;
     msg.className = "mensaje error";
@@ -692,9 +710,9 @@ function renderTablaSlices() {
   tbody.innerHTML = "";
   for (const s of estado.slices) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${s.nombre}${s.owner ? ` <span class="campo-ayuda">(${s.owner})</span>` : ""}</td>
-      <td><span class="estado-pill estado-${s.estado}">${s.estado}</span></td>
-      <td>${s.tipo}</td><td>${s.nodos}</td><td></td>`;
+    tr.innerHTML = `<td>${esc(s.nombre)}${s.owner ? ` <span class="campo-ayuda">(${esc(s.owner)})</span>` : ""}</td>
+      <td><span class="estado-pill estado-${esc(s.estado)}">${esc(s.estado)}</span></td>
+      <td>${esc(s.tipo)}</td><td>${esc(s.nodos)}</td><td></td>`;
     const tdAcc = tr.querySelector("td:last-child");
     const btnVer = document.createElement("button");
     btnVer.className = "secundario chico"; btnVer.textContent = "Ver";
@@ -702,7 +720,14 @@ function renderTablaSlices() {
     const btnDel = document.createElement("button");
     btnDel.className = "secundario chico"; btnDel.textContent = "Eliminar";
     btnDel.addEventListener("click", () => eliminarSlice(s.id, s.nombre));
-    tdAcc.appendChild(btnVer); tdAcc.appendChild(btnDel);
+    tdAcc.appendChild(btnVer);
+    if (["borrador", "error"].includes(String(s.estado).toLowerCase())) {
+      const btnDep = document.createElement("button");
+      btnDep.className = "primario chico"; btnDep.textContent = "Desplegar";
+      btnDep.addEventListener("click", () => desplegarSlice(s.id, s.nombre));
+      tdAcc.appendChild(btnDep);
+    }
+    tdAcc.appendChild(btnDel);
     tbody.appendChild(tr);
   }
 }
@@ -739,9 +764,9 @@ async function verSlice(id) {
 async function eliminarSlice(id, nombre) {
   if (!confirm(`¿Eliminar el slice "${nombre}"? Esta acción no se puede deshacer.`)) return;
   try {
-    await api("DELETE", "/slices/" + id);
-    cargarSlices(); cargarRecursos();
-    document.getElementById("detalle-slice").innerHTML = '<p class="campo-ayuda">Selecciona un slice de la lista.</p>';
+    await api("DELETE", "/slices/" + id + "?asincrono=1");   // se encola como trabajo (R1)
+    cargarTrabajos();
+    document.getElementById("detalle-slice").innerHTML = '<p class="campo-ayuda">Eliminación en cola: sigue el avance en la pestaña Trabajos.</p>';
   } catch (e) {
     alert(e.message);
   }
@@ -760,6 +785,95 @@ async function cargarRecursos() {
       <td>${s.vcpu}</td><td>${s.ram_mb}</td><td>${s.disco_gb}</td></tr>`).join("");
     document.getElementById("recursos-total").textContent =
       `Total propio: ${r.total_mio.vcpu} vCPU, ${r.total_mio.ram_mb} MB RAM, ${r.total_mio.disco_gb} GB disco.`;
+  } catch (e) {
+    if (/401|token/i.test(e.message)) onSalir();
+  }
+}
+
+
+// ------------------------------------------------------------------
+// Desplegar un borrador desde la lista (encolado)
+// ------------------------------------------------------------------
+async function desplegarSlice(id, nombre) {
+  try {
+    await api("POST", `/slices/${id}/desplegar`, { estrategia: "objetivo" });
+    await cargarTrabajos();
+    activarTab("trabajos");
+  } catch (e) {
+    alert(`No se pudo encolar el despliegue de "${nombre}": ${e.message}`);
+  }
+}
+
+// ------------------------------------------------------------------
+// Tab: Trabajos (cola FIFO, R1)
+// ------------------------------------------------------------------
+let sondeoTimer = null;
+let activosPrevios = new Set();
+const ESTADOS_ACTIVOS = ["pendiente", "en_curso"];
+
+function hayTrabajosActivos() { return estado.trabajos.some(t => ESTADOS_ACTIVOS.includes(t.estado)); }
+
+function iniciarSondeo() {
+  detenerSondeo();
+  const ciclo = async () => {
+    if (!estado.token) return;
+    if (!document.hidden) await cargarTrabajos();
+    sondeoTimer = setTimeout(ciclo, hayTrabajosActivos() ? 2000 : 8000);
+  };
+  sondeoTimer = setTimeout(ciclo, 1500);
+}
+
+function detenerSondeo() {
+  clearTimeout(sondeoTimer); sondeoTimer = null;
+  activosPrevios = new Set(); estado.trabajos = [];
+}
+
+async function cargarTrabajos() {
+  if (!estado.token) return;
+  try {
+    const ruta = estado.rol === "admin" && estado.verTodos ? "/trabajos?todos=1" : "/trabajos";
+    estado.trabajos = await api("GET", ruta);
+  } catch (e) {
+    if (/401|token/i.test(e.message)) onSalir();
+    return;
+  }
+  const activos = new Set(estado.trabajos.filter(t => ESTADOS_ACTIVOS.includes(t.estado)).map(t => t.id));
+  // Si algún trabajo acaba de terminar, el estado de los slices y de los hosts cambió.
+  if ([...activosPrevios].some(id => !activos.has(id))) { cargarSlices(); cargarRecursos(); cargarBroadcast(); }
+  activosPrevios = activos;
+  const badge = document.getElementById("badge-trabajos");
+  badge.textContent = activos.size ? `(${activos.size})` : "";
+  renderTablaTrabajos();
+}
+
+function renderTablaTrabajos() {
+  const tbody = document.querySelector("#tabla-trabajos tbody");
+  document.getElementById("trabajos-vacio").classList.toggle("oculto", estado.trabajos.length > 0);
+  tbody.innerHTML = estado.trabajos.map(t => {
+    const sl = estado.slices.find(x => x.id === t.slice_id);
+    const dur = t.iniciado && t.terminado ? `${(t.terminado - t.iniciado).toFixed(1)} s`
+              : t.estado === "en_curso" ? "en curso…" : "-";
+    const detalle = t.error ? `<span class="celda-error">${esc(t.error)}</span>`
+                  : t.estado === "completado" ? "ok" : "";
+    return `<tr><td>${esc(t.id)}</td><td>${esc(t.tipo)}</td>
+      <td>${esc(sl ? sl.nombre + " (" + t.slice_id + ")" : t.slice_id)}</td><td>${esc(t.usuario)}</td>
+      <td><span class="estado-pill estado-${esc(t.estado)}">${esc(t.estado)}</span></td>
+      <td>${t.posicion ? "#" + esc(t.posicion) : "-"}</td><td>${esc(dur)}</td><td>${detalle}</td></tr>`;
+  }).join("");
+}
+
+// ------------------------------------------------------------------
+// Tab: Red / control de broadcast (R5)
+// ------------------------------------------------------------------
+async function cargarBroadcast() {
+  if (!estado.token) return;
+  try {
+    const filas = await api("GET", "/red/broadcast");
+    const lista = vs => (vs && vs.length ? vs.join(", ") : "-");
+    document.getElementById("red-vacio").classList.toggle("oculto", filas.length > 0);
+    document.querySelector("#tabla-red tbody").innerHTML = filas.map(f => `<tr>
+      <td>${esc(f.host)}</td><td>${esc(lista(f.vlans))}</td><td>${esc(lista(f.vlans_uplink))}</td>
+      <td>${esc(lista(f.vlans_solo_locales))}</td><td>${esc(f.puertos_con_storm_control)}</td></tr>`).join("");
   } catch (e) {
     if (/401|token/i.test(e.message)) onSalir();
   }

@@ -67,6 +67,15 @@ class TestApiHttp(unittest.TestCase):
     def _spec_lineal(self, nombre):
         return {"nombre": nombre, "topologia": {"base": {"tipo": "lineal", "nodos": 2}}}
 
+    # -- plan de broadcast (GUI, pestaña Red) -------------------------------
+    def test_red_broadcast_requiere_token_y_devuelve_lista(self):
+        status, _ = _peticion("GET", f"{self.base}/red/broadcast")
+        self.assertEqual(status, 401)
+        token, _ = self._token("ana", "clave-usuario-1")
+        status, cuerpo = _peticion("GET", f"{self.base}/red/broadcast", token=token)
+        self.assertEqual(status, 200)
+        self.assertIsInstance(cuerpo, list)
+
     # -- login -------------------------------------------------------------
     def test_login_correcto_devuelve_token_y_rol(self):
         token, rol = self._token("brighit", "clave-admin-1")
