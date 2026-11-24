@@ -315,6 +315,10 @@ class DriverLinux:
                     # 2) iptables: instalar las 4 reglas de seguridad en el worker
                     nm.instalar_reglas_seguridad(worker_ip, vlan_id, bridge=bridge)
                     logger.info("[REAL] iptables ORQ-SL-%d instalada en worker %s", vlan_id, worker_ip)
+
+                    # 3) iptables en switches OVS dedicados (OVS1 del clúster Linux)
+                    # Germán 23-nov: "aplicar reglas en servidores Y switches de datos (OVS1 y 2)"
+                    nm.aplicar_reglas_en_ovs_switches(vlan_id)
             except Exception as exc:   # noqa: BLE001
                 # No tumbar el despliegue si falla la seguridad: logear y continuar
                 logger.warning("No se pudo configurar OVS/iptables en %s: %s", host_uri, exc)
@@ -359,6 +363,10 @@ class DriverLinux:
                 # Si no hay puerto activo, no hay reglas que limpiar
             except Exception as exc:   # noqa: BLE001
                 logger.warning("No se pudo limpiar OVS/iptables en %s: %s", host_uri, exc)
+
+            # Limpiar reglas en switches OVS dedicados (OVS1) si tenemos el vlan_id
+            # Nota: vlan_id debe venir del slice que se está eliminando
+            # Por ahora se delega al llamador proveer el vlan_id via el nombre del slice
 
             pool = conn.storagePoolLookupByName(self.pool_almacenamiento)
             for vol in (f"{nombre_vm}.qcow2", f"seed-{nombre_vm}.iso"):

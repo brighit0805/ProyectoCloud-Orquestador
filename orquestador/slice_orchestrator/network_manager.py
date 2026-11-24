@@ -371,6 +371,44 @@ def instalar_reglas_seguridad(
              "-j", "DROP")
 
 
+def aplicar_reglas_en_ovs_switches(vlan_id: int) -> None:
+    """Aplica reglas de seguridad iptables en los switches OVS dedicados del
+    clúster Linux (OVS1). Requerido por Germán: "aplicar reglas en servidores
+    y switches de datos (OVS1 y 2)" — para el driver Linux solo aplica OVS1.
+
+    Se llama al desplegar un slice Linux, después de configurar los workers.
+    Los errores se registran como warnings (no deben impedir el despliegue).
+    """
+    import logging
+    from config_cluster import OVS_SWITCHES  # importación lazy para evitar circular
+    logger = logging.getLogger(__name__)
+
+    for nombre, datos in OVS_SWITCHES.items():
+        ovs_ip = datos["ip"]
+        bridge = datos.get("bridge", "br-int")
+        try:
+            instalar_reglas_seguridad(ovs_ip, vlan_id, bridge=bridge)
+            logger.info("[OVS-SW] Reglas iptables instaladas en %s (%s)", nombre, ovs_ip)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[OVS-SW] No se pudo configurar %s (%s): %s", nombre, ovs_ip, exc)
+
+
+def limpiar_reglas_en_ovs_switches(vlan_id: int) -> None:
+    """Elimina reglas iptables del slice en los switches OVS dedicados del
+    clúster Linux (OVS1). Se llama al eliminar un slice Linux."""
+    import logging
+    from config_cluster import OVS_SWITCHES
+    logger = logging.getLogger(__name__)
+
+    for nombre, datos in OVS_SWITCHES.items():
+        ovs_ip = datos["ip"]
+        try:
+            limpiar_reglas_seguridad(ovs_ip, vlan_id)
+            logger.info("[OVS-SW] Reglas iptables limpiadas en %s (%s)", nombre, ovs_ip)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[OVS-SW] No se pudo limpiar %s (%s): %s", nombre, ovs_ip, exc)
+
+
 def limpiar_reglas_seguridad(worker_ip: str, vlan_id: int) -> None:
     """Elimina todas las reglas iptables del slice al eliminarlo.
 

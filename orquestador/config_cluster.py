@@ -23,9 +23,19 @@ POOL_LIBVIRT = "default"
 # VLAN_FIN) -- sin un bridge OVS real todavía, crear esos enlaces fallará;
 # queda documentado como limitación pendiente, no simulado como si ya funcionara.
 WORKERS = {
-    "server1": {"ip": "192.168.201.1", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
-    "server2": {"ip": "192.168.201.2", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
-    "server3": {"ip": "192.168.201.3", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
+    "server1": {"ip": "192.168.201.1", "bridge": "br-int"},
+    "server2": {"ip": "192.168.201.2", "bridge": "br-int"},
+    "server3": {"ip": "192.168.201.3", "bridge": "br-int"},
+}
+
+# Switches OVS dedicados del clúster Linux (Fase 2, nodos separados de los KVM workers).
+# OVS1 pertenece al clúster Linux; OVS2 pertenece al clúster OpenStack.
+# Germán (23-nov): "Deben aplicar reglas en servidores y switches de datos (OVS1 y 2)".
+# Para el driver Linux solo aplica OVS1.
+# IPs verificadas por VNC (ip -4 -br a) el 23-nov-2026.
+OVS_SWITCHES = {
+    "ovs1": {"ip": "192.168.201.5", "bridge": "br-int"},   # switch Linux cluster
+    # ovs2: 192.168.202.5 — cluster OpenStack, no aplica para driver Linux
 }
 
 # Imágenes base que deben existir en el pool de CADA server
