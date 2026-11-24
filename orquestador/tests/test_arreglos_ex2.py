@@ -87,9 +87,9 @@ class TestImagenes(unittest.TestCase):
 
 
 class TestZonaLinux(unittest.TestCase):
-    def test_zona_agrupa_server1_a_server4(self):
-        self.assertEqual(sorted(config_cluster.WORKERS),
-                         ["server1", "server2", "server3", "server4"])
+    def test_zona_agrupa_los_workers_activos(self):
+        # server4 está comentado (no es un worker KVM); si se habilita, sumarlo aquí.
+        self.assertEqual(sorted(config_cluster.WORKERS), ["server1", "server2", "server3"])
         self.assertTrue(config_cluster.ZONA_LINUX)
 
 

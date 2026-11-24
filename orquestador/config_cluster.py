@@ -26,7 +26,9 @@ WORKERS = {
     "server1": {"ip": "192.168.201.1", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
     "server2": {"ip": "192.168.201.2", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
     "server3": {"ip": "192.168.201.3", "bridge": "br-int"},   # CONFIRMAR bridge real cuando se configure OVS
-    "server4": {"ip": "192.168.201.4", "bridge": "br-int"},   # CONFIRMAR IP (por patrón) y bridge real
+    # server4 (192.168.201.4) existe pero NO es un worker KVM: sin br-int/libvirt/OVS visibles y el
+    # headnode no entra por SSH (24-nov). Descomentar solo si Germán confirma que se usa y lo habilitan.
+    # "server4": {"ip": "192.168.201.4", "bridge": "br-int"},
 }
 
 # Switches OVS dedicados del clúster Linux (Fase 2, nodos separados de los KVM workers).
@@ -40,13 +42,13 @@ OVS_SWITCHES = {
 }
 
 # Zona de disponibilidad del clúster Linux: agrupa todos los hosts de WORKERS
-# (server1..server4). Para el examen (Ex2) basta con quitar "server1" de WORKERS
+# (hoy server1..server3). Para el examen (Ex2) basta con quitar "server1" de WORKERS
 # o usar otro nombre de zona aquí.
 ZONA_LINUX = "az-lab"
 
 # Imágenes base que deben existir en el pool de CADA server
 IMAGENES_BASE = ["cirros-0.6.2.qcow2", "ubuntu-22.04.qcow2"]
-# Carpeta en server4 con las imágenes base: el orquestador las copia a cada server al desplegar
+# Carpeta EN EL HEADNODE (quien orquesta) con las imágenes base: el orquestador las copia a cada server al desplegar
 REPO_IMAGENES = "/home/ubuntu/imagenes-ex1"      # CONFIRMAR: ahí deben estar los dos .qcow2
 ARCHIVO_ESTADO_IMAGENES = "estado_imagenes.json"   # copias que creó el orquestador
 

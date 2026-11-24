@@ -49,5 +49,28 @@ class TestDescubrirConHostCaido(unittest.TestCase):
         self.assertEqual(r["server4"].zona_disponibilidad, "az-lab")
 
 
+class _ConnConInfo(_Conn):
+    def getInfo(self):
+        return ["x86_64", 3935, 4, 2400, 1, 1, 4, 1]    # modelo, RAM MB, CPUs, ...
+
+
+class _DriverRAMReal(_DriverFalso):
+    def _conectar(self, uri):
+        return _ConnConInfo()
+
+
+class TestCapacidadRamReal(unittest.TestCase):
+    def test_usa_la_ram_fisica_del_host(self):
+        h = Host("server1", "server1", "qemu+ssh://ubuntu@192.168.201.1/system", 16, 32768, "az-lab")
+        r = _DriverRAMReal(modo=ModoDriver.REAL, hosts_conocidos=[h]).descubrir_hosts()[0]
+        self.assertEqual(r.capacidad_ram_mb, 3935)
+        self.assertEqual(r.capacidad_vcpu, 16)       # solo la RAM se corrige
+
+    def test_si_no_se_puede_leer_se_conserva_la_configurada(self):
+        h = Host("server1", "server1", "qemu+ssh://ubuntu@192.168.201.1/system", 16, 32768, "az-lab")
+        r = _DriverFalso(modo=ModoDriver.REAL, hosts_conocidos=[h]).descubrir_hosts()[0]
+        self.assertEqual(r.capacidad_ram_mb, 32768)
+
+
 if __name__ == "__main__":
     unittest.main()

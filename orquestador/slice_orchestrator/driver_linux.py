@@ -686,6 +686,17 @@ class DriverLinux:
                     overcommit_vcpu=host.overcommit_vcpu, overcommit_ram=host.overcommit_ram))
                 continue
             try:
+                # RAM física REAL del servidor (libvirt: getInfo()[1], en MB). Antes se
+                # usaba un número fijo (32768) y el scheduler creía tener 8 veces la RAM
+                # que existe. Si el dato no se puede leer, se conserva el configurado.
+                capacidad_ram_mb = host.capacidad_ram_mb
+                try:
+                    ram_fisica = int(conn.getInfo()[1])
+                    if ram_fisica > 0:
+                        capacidad_ram_mb = ram_fisica
+                except Exception as exc:    # noqa: BLE001
+                    logger.warning("No se pudo leer la RAM física de %s (%s); se usa la configurada",
+                                   host.id, exc)
                 vcpu_usados = 0
                 ram_usados_mb = 0
                 for dom_id in conn.listDomainsID():
@@ -700,7 +711,7 @@ class DriverLinux:
                 conn.close()
             resultado.append(Host(
                 id=host.id, nombre=host.nombre, uri_libvirt=host.uri_libvirt,
-                capacidad_vcpu=host.capacidad_vcpu, capacidad_ram_mb=host.capacidad_ram_mb,
+                capacidad_vcpu=host.capacidad_vcpu, capacidad_ram_mb=capacidad_ram_mb,
                 zona_disponibilidad=host.zona_disponibilidad,
                 vcpu_usados=vcpu_usados, ram_usados_mb=ram_usados_mb,
                 capacidad_disco_gb=host.capacidad_disco_gb,
