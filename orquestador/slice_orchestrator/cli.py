@@ -66,8 +66,10 @@ def _construir_servicio_linux_real(ruta_estado: str) -> ServicioSlices:
             "ORQ_LINUX_REAL=1 pide 'config_cluster.py' (debe existir en la carpeta "
             "'orquestador', al mismo nivel que 'slice_orchestrator/'). No se encontró."
         ) from exc
+    from .control_broadcast import ConfigBroadcast
     from .driver_linux import DriverLinux, ModoDriver
 
+    qinq = ConfigBroadcast.desde_modulo(cfg_cluster).qinq
     hosts_config = [
         Host(nombre, nombre, cfg_cluster.uri(nombre), 16, 32768,
              getattr(cfg_cluster, "ZONA_LINUX", "az-lab"))
@@ -77,7 +79,8 @@ def _construir_servicio_linux_real(ruta_estado: str) -> ServicioSlices:
                           pool_almacenamiento=getattr(cfg_cluster, "POOL_LIBVIRT", "default"),
                           repo_imagenes=getattr(cfg_cluster, "REPO_IMAGENES", "imagenes"),
                           bridges_por_host={cfg_cluster.uri(n): cfg_cluster.WORKERS[n]["bridge"]
-                                            for n in cfg_cluster.WORKERS})
+                                            for n in cfg_cluster.WORKERS},
+                          mtu_enlaces=qinq.mtu_vm if qinq else None)
     try:
         hosts_reales = driver.descubrir_hosts()
     except Exception as exc:  # cualquier fallo de red/SSH/libvirt se traduce a un error de CLI limpio
@@ -190,6 +193,8 @@ def _mostrar_slice(d: dict[str, Any]) -> str:
     sal.append("")
     sal.append(_tabla([[e["id"], f"{e['a']} — {e['b']}", e["vlan"] or "-", e["red"] or "-"]
                        for e in d["enlaces"]], ["enlace", "nodos", "VLAN", "red"]))
+    if d.get("vlan_servicio") is not None:
+        sal.append(f"S-VLAN del slice (QinQ, etiqueta externa): {d['vlan_servicio']}")
     if any(n["interfaces"] for n in d["nodos"]):
         sal += ["", "Direcciones de los enlaces:"]
         for n in d["nodos"]:
@@ -330,8 +335,10 @@ def _cmd_red(svc: ServicioSlices, a: argparse.Namespace) -> None:
         lista = lambda vs: ",".join(map(str, vs)) or "-"
         _salida(a, datos, _tabla(
             [[d["host"], lista(d["vlans"]), lista(d["vlans_uplink"]),
-              lista(d["vlans_solo_locales"]), d["puertos_con_storm_control"]] for d in datos],
-            ["host", "VLANs con VMs", "cruzan el uplink", "solo locales", "puertos con storm control"])
+              lista(d["vlans_solo_locales"]), lista(d["svlans_uplink"]),
+              d["puertos_con_storm_control"]] for d in datos],
+            ["host", "VLANs con VMs", "cruzan el uplink", "solo locales",
+             "S-VLAN QinQ en el uplink", "puertos con storm control"])
             if datos else "No hay slices activos: ninguna VLAN cruza los uplinks.")
 
 

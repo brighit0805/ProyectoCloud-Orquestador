@@ -87,6 +87,16 @@ VLAN_INICIO, VLAN_FIN = 3000, 3099
 SWITCH_OVS = None
 CONTROL_BROADCAST = {"limite_pps": 200, "rafaga": 100, "vlan_sin_uso": 4094, "storm_control": True}
 
+# Aislamiento entre slices con QinQ (802.1ad), indicado por Germán (25-nov): etiqueta externa
+# (S-VLAN, rango 2000-2999) = una por slice; etiqueta interna (C-VLAN) = la VLAN de cada enlace.
+# Con "activo": True, en cada server se crea el bridge 'br-qinq', el uplink (ens4) pasa de
+# br-int a br-qinq y cada slice sale por un puerto dot1q-tunnel con su S-VLAN.
+#  - ethertype: "802.1ad" (TPID 0x88a8, estándar) o "802.1q" (0x8100) si ovs1 no reenvía 802.1ad.
+#  - mtu_vm: MTU de las interfaces de enlace de las VMs (dos etiquetas = 8 bytes más por trama).
+# Para volver a una sola etiqueta: "activo": False y, en cada server, devolver el uplink a br-int:
+#   sudo ovs-vsctl --if-exists del-port br-qinq ens4 -- --may-exist add-port br-int ens4
+QINQ = {"activo": True, "bridge": "br-qinq", "ethertype": "802.1ad", "mtu_vm": 1496}
+
 
 def uri(worker: str) -> str:
     return f"qemu+ssh://{USUARIO_SSH}@{WORKERS[worker]['ip']}/system"

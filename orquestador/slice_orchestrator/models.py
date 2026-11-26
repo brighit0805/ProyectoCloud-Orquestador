@@ -180,6 +180,10 @@ class Slice:
     enlaces: list[Enlace] = field(default_factory=list)
     estado: EstadoSlice = EstadoSlice.CREANDO
     zona_disponibilidad: str | None = None
+    # QinQ (802.1ad): etiqueta externa (S-VLAN) del slice. Todo el tráfico del
+    # slice que sale de un servidor viaja con esta etiqueta encima de la VLAN
+    # de su enlace (C-VLAN). La asigna Network Manager al desplegar.
+    vlan_servicio: int | None = None
 
     def nodo(self, nodo_id: str) -> Nodo:
         for n in self.nodos:
