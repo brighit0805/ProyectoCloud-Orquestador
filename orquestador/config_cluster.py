@@ -23,9 +23,11 @@ POOL_LIBVIRT = "default"
 # VLAN_FIN) -- sin un bridge OVS real todavía, crear esos enlaces fallará;
 # queda documentado como limitación pendiente, no simulado como si ya funcionara.
 WORKERS = {
-    "server1": {"ip": "192.168.201.1", "bridge": "br-int", "uplink": "ens4"},   # uplink verificado con ovs-vsctl list-ports (24-nov)
-    "server2": {"ip": "192.168.201.2", "bridge": "br-int", "uplink": "ens4"},   # uplink verificado con ovs-vsctl list-ports (24-nov)
-    "server3": {"ip": "192.168.201.3", "bridge": "br-int", "uplink": "ens4"},   # uplink verificado con ovs-vsctl list-ports (24-nov)
+    # uplink: verificado con ovs-vsctl list-ports (24-nov), va a MPLink1 (gestión).
+    # uplink_datos: ens3, directo a ovs1 (26-nov); se usa solo con UPLINK_DATOS_SEPARADO = True.
+    "server1": {"ip": "192.168.201.1", "bridge": "br-int", "uplink": "ens4", "uplink_datos": "ens3"},
+    "server2": {"ip": "192.168.201.2", "bridge": "br-int", "uplink": "ens4", "uplink_datos": "ens3"},
+    "server3": {"ip": "192.168.201.3", "bridge": "br-int", "uplink": "ens4", "uplink_datos": "ens3"},
     # server4 (192.168.201.4) existe pero NO es un worker KVM: sin br-int/libvirt/OVS visibles y el
     # headnode no entra por SSH (24-nov). Descomentar solo si Germán confirma que se usa y lo habilitan.
     # "server4": {"ip": "192.168.201.4", "bridge": "br-int"},
@@ -121,6 +123,13 @@ CONTROL_BROADCAST = {"limite_pps": 200, "rafaga": 100, "vlan_sin_uso": 4094, "st
 #  - mtu_vm: MTU de las interfaces de enlace de las VMs (dos etiquetas = 8 bytes más por trama).
 # Para volver a una sola etiqueta: "activo": False y, en cada server, devolver el uplink a br-int:
 #   sudo ovs-vsctl --if-exists del-port br-qinq ens4 -- --may-exist add-port br-int ens4
+# Uplink de datos separado (R5, 27-nov): con True, las VLANs de las VMs salen por
+# "uplink_datos" (ens3 -> ovs1) y "uplink" (ens4 -> MPLink1) queda solo con la gestión.
+# Así lo pide el enunciado (tráfico de VMs por OVS) y un error en las VLANs no corta el SSH.
+# Activar después de que entrega-qinq/prueba_qinq_ens3.sh confirme el enlace ens3 <-> ovs1.
+# Con QinQ activo además, ens3 va a br-qinq y ens4 ya no se mueve de br-int.
+UPLINK_DATOS_SEPARADO = False
+
 QINQ = {"activo": False, "bridge": "br-qinq", "ethertype": "802.1ad", "mtu_vm": 1496}
 
 
