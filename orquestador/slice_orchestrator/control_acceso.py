@@ -32,6 +32,7 @@ from typing import Any
 
 ITERACIONES_PBKDF2 = 200_000
 ROLES_VALIDOS = ("admin", "usuario")
+LARGO_MINIMO_PASSWORD = 8
 TTL_TOKEN_SEG_DEFAULT = 3600
 
 
@@ -172,3 +173,16 @@ class GestorUsuarios:
         if not entrada or not ok:
             raise CredencialesInvalidas("Usuario o contraseña incorrectos")
         return entrada["rol"]
+
+    def cambiar_password(self, usuario: str, actual: str, nueva: str) -> None:
+        """El propio usuario cambia su contraseña (GUI). Exige la actual y una
+        nueva de al menos ``LARGO_MINIMO_PASSWORD`` caracteres; el rol no cambia."""
+        rol = self.autenticar(usuario, actual)
+        if len(nueva or "") < LARGO_MINIMO_PASSWORD:
+            raise ErrorAcceso(f"La contraseña nueva debe tener al menos {LARGO_MINIMO_PASSWORD} caracteres")
+        if nueva == actual:
+            raise ErrorAcceso("La contraseña nueva debe ser distinta de la actual")
+        datos = self._cargar()
+        sal_hex, hash_hex = hash_password(nueva)
+        datos[usuario] = {"sal": sal_hex, "hash": hash_hex, "rol": rol}
+        self._guardar(datos)

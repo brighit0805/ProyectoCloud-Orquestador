@@ -142,6 +142,24 @@ class Handler(BaseHTTPRequestHandler):
                 resultado = _svc.crear_slice(sesion["usuario"], cuerpo, desplegar=desplegar,
                                               estrategia=estrategia)
                 self._enviar_json(201, resultado)
+            elif ruta == "/cuenta/contrasena":
+                sesion = self._sesion()
+                cuerpo = self._leer_json()
+                try:
+                    _gestor.cambiar_password(sesion["usuario"], str(cuerpo.get("actual", "")),
+                                             str(cuerpo.get("nueva", "")))
+                except CredencialesInvalidas:
+                    # 400 y no 401: la sesión sigue siendo válida, solo falló la clave actual.
+                    raise ErrorServicio("La contraseña actual no es correcta") from None
+                except ErrorAcceso as exc:
+                    raise ErrorServicio(str(exc)) from None
+                self._enviar_json(200, {"ok": True})
+            elif ruta.startswith("/slices/") and ruta.endswith("/consola"):
+                sesion = self._sesion()
+                slice_id = ruta[len("/slices/"):-len("/consola")]
+                cuerpo = self._leer_json()
+                self._enviar_json(200, _svc.emitir_token_consola(
+                    sesion["usuario"], slice_id, str(cuerpo.get("nodo", ""))))
             elif ruta.startswith("/slices/") and ruta.endswith("/desplegar"):
                 sesion = self._sesion()
                 slice_id = ruta[len("/slices/"):-len("/desplegar")]

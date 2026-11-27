@@ -11,228 +11,396 @@
 </head>
 <body>
 
+<!-- Íconos (dibujados para este proyecto) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-logo" viewBox="0 0 24 24"><circle cx="5" cy="6" r="2.6"/><circle cx="19" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M7.3 7.2 10.6 16M16.7 7.2 13.4 16M7.6 6h8.8" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+    <symbol id="i-slices" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3 3 7.5l9 4.5 9-4.5z"/><path d="m3 12 9 4.5 9-4.5"/><path d="m3 16.5 9 4.5 9-4.5"/></symbol>
+    <symbol id="i-disenar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="9" r="2.5"/><circle cx="8" cy="18" r="2.5"/><path d="M8.3 7.2l7.4 1.2M7.2 8.3l.6 7.2"/><path d="M17 15v6M14 18h6"/></symbol>
+    <symbol id="i-trabajos" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.3"/><circle cx="4.5" cy="12" r="1.3"/><circle cx="4.5" cy="18" r="1.3"/></symbol>
+    <symbol id="i-recursos" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1.5"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3" stroke-linecap="round"/></symbol>
+    <symbol id="i-red" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="2.5" y="9" width="19" height="6" rx="1.2"/><path d="M6 12h.01M9 12h.01M12 12h.01M15 12h.01" stroke-linecap="round" stroke-width="2.4"/><path d="M7 9V5M17 9V5M12 15v4" stroke-linecap="round"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-refrescar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></symbol>
+    <symbol id="i-mas" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-ojo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12.5-7.5z"/></symbol>
+    <symbol id="i-basura" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></symbol>
+    <symbol id="i-descargar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M4 20h16"/></symbol>
+    <symbol id="i-volver" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6 4 12l6 6M4 12h16"/></symbol>
+    <symbol id="i-consola" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/></symbol>
+    <symbol id="i-llave" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="8" cy="14" r="4"/><path d="M11 11l9-9M16 6l2 2M14 8l2 2"/></symbol>
+    <symbol id="i-salir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10"/></symbol>
+    <symbol id="i-buscar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+    <symbol id="i-zoom-mas" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5M11 8v6M8 11h6"/></symbol>
+    <symbol id="i-zoom-menos" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5M8 11h6"/></symbol>
+    <symbol id="i-ajustar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+    <symbol id="i-flecha" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+    <symbol id="i-globo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/></symbol>
+    <symbol id="i-cerrar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  </defs>
+</svg>
+
 <!-- ======================= Pantalla de login ======================= -->
 <section id="vista-login" class="vista">
-  <form id="form-login" class="tarjeta-login" novalidate>
-    <h1>Orquestador de Slices</h1>
-    <p class="subtitulo">Grupo 2 — TEL141</p>
-    <label for="login-usuario">Usuario
-      <input type="text" id="login-usuario" autocomplete="username" required>
-    </label>
-    <label for="login-password">Contraseña
-      <input type="password" id="login-password" autocomplete="current-password" required>
-    </label>
-    <button type="submit" class="primario ancho">Ingresar</button>
-    <p id="login-error" class="error oculto" role="alert"></p>
-  </form>
+  <div class="login-arte" aria-hidden="true">
+    <div class="login-marca"><svg class="ico"><use href="#i-logo"/></svg> Orquestador de Slices</div>
+    <svg class="login-grafo" viewBox="0 0 400 300">
+      <g class="lg-enlaces">
+        <line x1="80" y1="70" x2="200" y2="40"/><line x1="200" y1="40" x2="320" y2="80"/>
+        <line x1="320" y1="80" x2="300" y2="200"/><line x1="300" y1="200" x2="180" y2="250"/>
+        <line x1="180" y1="250" x2="70" y2="190"/><line x1="70" y1="190" x2="80" y2="70"/>
+        <line x1="200" y1="40" x2="190" y2="150"/><line x1="190" y1="150" x2="300" y2="200"/>
+        <line x1="190" y1="150" x2="70" y2="190"/>
+      </g>
+      <g class="lg-nodos">
+        <circle cx="80" cy="70" r="11"/><circle cx="200" cy="40" r="11"/><circle cx="320" cy="80" r="11"/>
+        <circle cx="300" cy="200" r="11"/><circle cx="180" cy="250" r="11"/><circle cx="70" cy="190" r="11"/>
+        <circle cx="190" cy="150" r="15" class="lg-centro"/>
+      </g>
+    </svg>
+    <p class="login-lema">Slices de VMs en capa 2 sobre el clúster Linux y OpenStack: diseño, despliegue y monitoreo desde un solo lugar.</p>
+    <p class="login-pie">TEL141 · Ingeniería de Redes Cloud · Grupo 2</p>
+  </div>
+  <div class="login-lado">
+    <form id="form-login" class="tarjeta-login" novalidate>
+      <h1>Iniciar sesión</h1>
+      <p class="subtitulo">Ingresa con tu usuario del orquestador.</p>
+      <label for="login-usuario">Usuario
+        <input type="text" id="login-usuario" autocomplete="username" required>
+      </label>
+      <label for="login-password">Contraseña
+        <input type="password" id="login-password" autocomplete="current-password" required>
+      </label>
+      <button type="submit" class="primario ancho">Ingresar</button>
+      <p id="login-error" class="error oculto" role="alert"></p>
+    </form>
+  </div>
 </section>
 
 <!-- ======================= App principal ======================= -->
 <section id="vista-app" class="vista oculto">
   <header class="barra-superior">
     <div class="marca">
-      <h1>Orquestador de Slices</h1>
-      <span class="marca-sub">Grupo 2 · TEL141</span>
+      <svg class="ico ico-logo"><use href="#i-logo"/></svg>
+      <span class="marca-nombre">Orquestador de Slices</span>
     </div>
-    <nav class="tabs" role="tablist">
-      <button class="tab activo" data-tab="disenar" role="tab" aria-selected="true">Diseñar slice</button>
-      <button class="tab" data-tab="slices" role="tab" aria-selected="false">Mis slices</button>
-      <button class="tab" data-tab="trabajos" role="tab" aria-selected="false">Trabajos <span class="contador-chip" id="badge-trabajos"></span></button>
-      <button class="tab" data-tab="recursos" role="tab" aria-selected="false">Recursos</button>
-      <button class="tab" data-tab="red" role="tab" aria-selected="false">Red</button>
-    </nav>
-    <div class="info-sesion">
-      <span id="sesion-usuario"></span>
-      <span id="sesion-rol" class="chip"></span>
-      <label id="toggle-todos-wrap" class="oculto">
-        <input type="checkbox" id="toggle-todos"> ver todos
-      </label>
-      <button id="btn-salir" class="secundario chico">Salir</button>
+    <button type="button" id="btn-menu" class="btn-icono claro" aria-label="Mostrar u ocultar el menú" title="Menú">
+      <svg class="ico"><use href="#i-menu"/></svg>
+    </button>
+    <div class="espaciador"></div>
+    <div class="usuario-menu">
+      <button type="button" id="btn-usuario" class="btn-avatar" aria-haspopup="true" aria-expanded="false" title="Cuenta">
+        <span class="avatar" id="avatar-barra"></span>
+      </button>
+      <div id="menu-usuario" class="menu-desplegable oculto" role="menu">
+        <div class="menu-cabecera">
+          <span class="avatar grande" id="avatar-menu"></span>
+          <strong id="menu-nombre"></strong>
+          <span class="chip-rol" id="menu-rol"></span>
+        </div>
+        <button type="button" class="menu-item" id="btn-cambiar-clave" role="menuitem">
+          <svg class="ico"><use href="#i-llave"/></svg> Cambiar contraseña
+        </button>
+        <button type="button" class="menu-item" id="btn-salir" role="menuitem">
+          <svg class="ico"><use href="#i-salir"/></svg> Salir
+        </button>
+      </div>
     </div>
   </header>
 
-  <!-- ---------- Tab: Diseñar ---------- -->
-  <section id="tab-disenar" class="panel-tab panel-tab-disenar">
-    <div class="disenar-layout">
-
-      <aside class="panel-lateral">
-        <form id="form-disenar" novalidate>
-          <div class="campo">
-            <label for="d-nombre">Nombre del slice</label>
-            <input type="text" id="d-nombre" placeholder="mi-slice-1" maxlength="30" required
-                   aria-describedby="d-nombre-ayuda">
-            <p class="campo-ayuda" id="d-nombre-ayuda">Minúsculas, números y guiones, de 1 a 30 caracteres.</p>
-            <p class="campo-error oculto" id="d-nombre-error" role="alert"></p>
-          </div>
-
-          <div class="campo">
-            <label for="d-tipo">Tipo de topología</label>
-            <select id="d-tipo"></select>
-          </div>
-
-          <div class="campo">
-            <label for="d-nodos">Número de nodos</label>
-            <input type="number" id="d-nodos" min="2" step="1" value="3" required
-                   aria-describedby="d-nodos-ayuda">
-            <p class="campo-ayuda" id="d-nodos-ayuda"></p>
-            <p class="campo-error oculto" id="d-nodos-error" role="alert"></p>
-          </div>
-
-          <div class="campo oculto" id="wrap-ramificacion">
-            <label for="d-ramificacion">Ramificación (árbol)</label>
-            <input type="number" id="d-ramificacion" min="2" step="1" value="2">
-          </div>
-
-          <div class="campo">
-            <label for="d-zona">Zona de disponibilidad</label>
-            <select id="d-zona"><option value="">Sin especificar</option></select>
-          </div>
-
-          <details class="seccion-plegable">
-            <summary>Injertos (ramas) <span class="contador-chip" id="contador-injertos"></span></summary>
-            <p class="campo-ayuda">Cuelga una sub-topología de un nodo ya existente de la base.</p>
-            <div id="d-lista-injertos"></div>
-            <div class="fila-compacta">
-              <select id="inj-sobre"></select>
-              <select id="inj-tipo"></select>
-              <input type="number" id="inj-nodos" min="1" value="2" title="nodos del injerto">
-              <input type="number" id="inj-ramificacion" min="2" value="2" title="ramificación (árbol)" class="oculto">
-              <button type="button" id="inj-agregar" class="secundario chico">Agregar rama</button>
-            </div>
-          </details>
-
-          <details class="seccion-plegable">
-            <summary>Capacidad e Internet <span class="contador-chip" id="contador-opciones"></span></summary>
-            <p class="campo-ayuda">Opcional — lo que dejes en blanco usa el flavor por defecto.</p>
-            <div id="d-lista-capacidad"></div>
-            <div class="fila-compacta">
-              <select id="cap-nodo"></select>
-              <input type="number" id="cap-vcpu" min="1" max="8" placeholder="vCPU">
-              <input type="number" id="cap-ram" min="256" max="16384" placeholder="RAM MB">
-              <input type="number" id="cap-disco" min="1" max="100" step="0.5" placeholder="Disco GB">
-              <button type="button" id="cap-agregar" class="secundario chico">Fijar</button>
-            </div>
-            <div id="d-lista-internet"></div>
-            <div class="fila-compacta fila-compacta-2">
-              <select id="net-nodo"></select>
-              <button type="button" id="net-agregar" class="secundario chico">Dar acceso a internet</button>
-            </div>
-          </details>
-
-          <details class="seccion-plegable">
-            <summary>Importar desde plantilla</summary>
-            <p class="campo-ayuda">Crea un slice nuevo a partir de un .json exportado antes.</p>
-            <input type="file" id="plant-archivo" accept="application/json,.json">
-            <input type="text" id="plant-nombre" placeholder="Nombre del nuevo slice (opcional)">
-            <button type="button" id="plant-crear" class="secundario chico ancho">Crear desde plantilla</button>
-          </details>
-        </form>
-
-        <div class="panel-lateral-acciones">
-          <label class="opcion-desplegar"><input type="checkbox" id="d-desplegar"> Desplegar de inmediato (en cola)</label>
-          <button type="button" id="d-crear" class="primario ancho">Crear slice</button>
-          <p id="d-mensaje" class="mensaje oculto" role="status"></p>
+  <div class="cuerpo-app">
+    <aside class="menu-lateral" id="menu-lateral">
+      <div class="lateral-usuario">
+        <span class="avatar grande" id="avatar-lateral"></span>
+        <div>
+          <div id="sesion-usuario" class="lateral-nombre"></div>
+          <span id="sesion-rol" class="chip-rol"></span>
         </div>
-      </aside>
+      </div>
+      <p class="lateral-titulo">Navegación principal</p>
+      <nav class="lateral-nav" role="tablist">
+        <button class="tab" data-tab="slices" role="tab"><svg class="ico"><use href="#i-slices"/></svg> Slices</button>
+        <button class="tab" data-tab="disenar" role="tab"><svg class="ico"><use href="#i-disenar"/></svg> Diseñar slice</button>
+        <button class="tab" data-tab="trabajos" role="tab"><svg class="ico"><use href="#i-trabajos"/></svg> Trabajos <span class="badge" id="badge-trabajos"></span></button>
+        <button class="tab" data-tab="recursos" role="tab"><svg class="ico"><use href="#i-recursos"/></svg> Recursos</button>
+        <button class="tab" data-tab="red" role="tab"><svg class="ico"><use href="#i-red"/></svg> Red</button>
+      </nav>
+    </aside>
 
-      <section class="panel-lienzo">
-        <div class="modo-tabs" role="tablist">
-          <button class="modo-tab activo" data-modo="editar" role="tab" aria-selected="true">Editar topología</button>
-          <button class="modo-tab" data-modo="preview" role="tab" aria-selected="false">Vista previa con injertos</button>
-        </div>
-        <p class="lienzo-ayuda">
-          <span id="ayuda-editar">Clic (o Enter con el nodo enfocado) en dos nodos para alternar el enlace entre ambos. Tab para moverte entre nodos.</span>
-          <span id="ayuda-preview" class="oculto">Vista de solo lectura: incluye los injertos sobre la figura base.</span>
-        </p>
-        <div class="canvas-wrap">
-          <svg id="d-lienzo" class="lienzo-svg" viewBox="0 0 1000 620" role="application" aria-label="Lienzo de edición de topología">
-            <g class="capa-lienzo"></g>
-          </svg>
-          <svg id="d-preview" class="lienzo-svg oculto" viewBox="0 0 1000 620" role="img" aria-label="Vista previa de la topología con injertos">
-            <g class="capa-lienzo"></g>
-          </svg>
-          <div class="zoom-controles" id="zoom-controles-editar">
-            <button type="button" class="btn-zoom" data-zoom="in" aria-label="Acercar" title="Acercar">
-              <svg viewBox="0 0 20 20" width="16" height="16"><circle cx="8.5" cy="8.5" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><line x1="13" y1="13" x2="18" y2="18" stroke="currentColor" stroke-width="1.6"/><line x1="8.5" y1="5.5" x2="8.5" y2="11.5" stroke="currentColor" stroke-width="1.6"/><line x1="5.5" y1="8.5" x2="11.5" y2="8.5" stroke="currentColor" stroke-width="1.6"/></svg>
-            </button>
-            <button type="button" class="btn-zoom" data-zoom="out" aria-label="Alejar" title="Alejar">
-              <svg viewBox="0 0 20 20" width="16" height="16"><circle cx="8.5" cy="8.5" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><line x1="13" y1="13" x2="18" y2="18" stroke="currentColor" stroke-width="1.6"/><line x1="5.5" y1="8.5" x2="11.5" y2="8.5" stroke="currentColor" stroke-width="1.6"/></svg>
-            </button>
-            <button type="button" class="btn-zoom" data-zoom="fit" aria-label="Ajustar vista" title="Ajustar vista">
-              <svg viewBox="0 0 20 20" width="16" height="16"><path d="M3 7V3h4M17 7V3h-4M3 13v4h4M17 13v4h-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </button>
+    <main class="contenido">
+      <div class="cabecera-pagina">
+        <h1 id="titulo-pagina"></h1>
+        <p id="subtitulo-pagina"></p>
+      </div>
+
+      <!-- ---------- Slices ---------- -->
+      <section id="tab-slices" class="panel-tab oculto">
+        <div class="tarjeta">
+          <div class="barra-herramientas">
+            <button type="button" id="btn-refrescar-slices" class="secundario"><svg class="ico"><use href="#i-refrescar"/></svg> Refrescar</button>
+            <button type="button" id="btn-nuevo-slice" class="primario"><svg class="ico"><use href="#i-mas"/></svg> Nuevo slice</button>
+            <label id="toggle-todos-wrap" class="interruptor oculto">
+              <input type="checkbox" id="toggle-todos"> Ver slices de todos los usuarios
+            </label>
+            <div class="espaciador"></div>
+            <label class="buscador">
+              <svg class="ico"><use href="#i-buscar"/></svg>
+              <input type="search" id="buscar-slices" placeholder="Buscar slice…" aria-label="Buscar slice">
+            </label>
           </div>
+          <div class="tabla-scroll">
+            <table id="tabla-slices" class="tabla">
+              <thead><tr><th>Slice</th><th class="col-owner">Propietario</th><th>Topología</th><th>Nodos</th><th>Enlaces</th><th>Zona</th><th>Estado</th><th class="col-acciones">Acciones</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="slices-vacio" class="vacio oculto">Todavía no hay slices. Crea uno con <b>Nuevo slice</b>.</p>
+          <p id="slices-conteo" class="pie-tabla"></p>
         </div>
       </section>
-    </div>
-  </section>
 
-  <!-- ---------- Tab: Mis slices ---------- -->
-  <section id="tab-slices" class="panel-tab oculto">
-    <div class="layout-slices">
-      <div class="columna-lista">
-        <div class="encabezado-columna">
-          <h2>Slices</h2>
-          <button id="btn-refrescar-slices" class="secundario chico">Refrescar</button>
+      <!-- ---------- Detalle de un slice ---------- -->
+      <section id="tab-detalle" class="panel-tab oculto">
+        <div class="tarjeta">
+          <div class="detalle-cabecera">
+            <div>
+              <h2>Ver slice: <span id="det-nombre" class="mono"></span></h2>
+              <div class="pills-detalle" id="det-pills"></div>
+            </div>
+            <div class="grupo-botones" id="det-acciones">
+              <button type="button" class="btn-accion" id="det-volver" title="Volver a la lista"><svg class="ico"><use href="#i-volver"/></svg></button>
+              <button type="button" class="btn-accion" id="det-refrescar" title="Refrescar"><svg class="ico"><use href="#i-refrescar"/></svg></button>
+              <button type="button" class="btn-accion" id="det-exportar" title="Exportar plantilla"><svg class="ico"><use href="#i-descargar"/></svg></button>
+              <button type="button" class="btn-accion" id="det-desplegar" title="Desplegar"><svg class="ico"><use href="#i-play"/></svg></button>
+              <button type="button" class="btn-accion peligro" id="det-eliminar" title="Eliminar slice"><svg class="ico"><use href="#i-basura"/></svg></button>
+            </div>
+          </div>
+          <p class="ayuda-lienzo">Clic en una VM para ver su información y abrir su consola. Arrastra el fondo para mover el dibujo y usa la rueda para acercar.</p>
+          <div class="leyenda" id="det-leyenda"></div>
+          <div class="detalle-cuerpo">
+            <div class="canvas-wrap canvas-detalle">
+              <svg id="det-lienzo" class="lienzo-svg" viewBox="0 0 1000 620" role="img" aria-label="Topología del slice">
+                <g class="capa-lienzo"></g>
+              </svg>
+              <div class="controles-mover" aria-label="Mover el dibujo">
+                <button type="button" class="btn-redondo" data-objetivo="det-lienzo" data-pan="arriba" title="Arriba"><svg class="ico"><use href="#i-flecha"/></svg></button>
+                <div>
+                  <button type="button" class="btn-redondo rot-270" data-objetivo="det-lienzo" data-pan="izquierda" title="Izquierda"><svg class="ico"><use href="#i-flecha"/></svg></button>
+                  <button type="button" class="btn-redondo rot-180" data-objetivo="det-lienzo" data-pan="abajo" title="Abajo"><svg class="ico"><use href="#i-flecha"/></svg></button>
+                  <button type="button" class="btn-redondo rot-90" data-objetivo="det-lienzo" data-pan="derecha" title="Derecha"><svg class="ico"><use href="#i-flecha"/></svg></button>
+                </div>
+              </div>
+              <div class="controles-zoom-det">
+                <button type="button" class="btn-redondo" data-objetivo="det-lienzo" data-zoom="fit" title="Ajustar vista"><svg class="ico"><use href="#i-ajustar"/></svg></button>
+                <div>
+                  <button type="button" class="btn-redondo" data-objetivo="det-lienzo" data-zoom="out" title="Alejar"><svg class="ico"><use href="#i-zoom-menos"/></svg></button>
+                  <button type="button" class="btn-redondo" data-objetivo="det-lienzo" data-zoom="in" title="Acercar"><svg class="ico"><use href="#i-zoom-mas"/></svg></button>
+                </div>
+              </div>
+            </div>
+            <aside class="panel-info" id="det-info">
+              <p class="vacio">Selecciona una VM en el dibujo.</p>
+            </aside>
+          </div>
+          <details class="seccion-plegable tablas-detalle">
+            <summary>Ver como tabla</summary>
+            <div id="det-tablas"></div>
+          </details>
         </div>
-        <table id="tabla-slices">
-          <thead><tr><th>Nombre</th><th>Estado</th><th>Tipo</th><th>Nodos</th><th></th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <div class="columna-detalle">
-        <h2>Detalle</h2>
-        <div id="detalle-slice" class="caja-detalle">
-          <p class="campo-ayuda">Selecciona un slice de la lista.</p>
+      </section>
+
+      <!-- ---------- Diseñar ---------- -->
+      <section id="tab-disenar" class="panel-tab panel-tab-disenar oculto">
+        <div class="disenar-layout tarjeta sin-relleno">
+
+          <aside class="panel-lateral">
+            <form id="form-disenar" novalidate>
+              <div class="campo">
+                <label for="d-nombre">Nombre del slice</label>
+                <input type="text" id="d-nombre" placeholder="mi-slice-1" maxlength="30" required
+                       aria-describedby="d-nombre-ayuda">
+                <p class="campo-ayuda" id="d-nombre-ayuda">Minúsculas, números y guiones, de 1 a 30 caracteres.</p>
+                <p class="campo-error oculto" id="d-nombre-error" role="alert"></p>
+              </div>
+
+              <div class="campo">
+                <label for="d-tipo">Tipo de topología</label>
+                <select id="d-tipo"></select>
+              </div>
+
+              <div class="campo">
+                <label for="d-nodos">Número de nodos</label>
+                <input type="number" id="d-nodos" min="2" step="1" value="3" required
+                       aria-describedby="d-nodos-ayuda">
+                <p class="campo-ayuda" id="d-nodos-ayuda"></p>
+                <p class="campo-error oculto" id="d-nodos-error" role="alert"></p>
+              </div>
+
+              <div class="campo oculto" id="wrap-ramificacion">
+                <label for="d-ramificacion">Ramificación (árbol)</label>
+                <input type="number" id="d-ramificacion" min="2" step="1" value="2">
+              </div>
+
+              <div class="campo">
+                <label for="d-zona">Zona de disponibilidad</label>
+                <select id="d-zona"><option value="">Sin especificar</option></select>
+              </div>
+
+              <details class="seccion-plegable">
+                <summary>Injertos (ramas) <span class="contador-chip" id="contador-injertos"></span></summary>
+                <p class="campo-ayuda">Cuelga una sub-topología de un nodo ya existente de la base.</p>
+                <div id="d-lista-injertos"></div>
+                <div class="fila-compacta">
+                  <select id="inj-sobre"></select>
+                  <select id="inj-tipo"></select>
+                  <input type="number" id="inj-nodos" min="1" value="2" title="nodos del injerto">
+                  <input type="number" id="inj-ramificacion" min="2" value="2" title="ramificación (árbol)" class="oculto">
+                  <button type="button" id="inj-agregar" class="secundario chico">Agregar rama</button>
+                </div>
+              </details>
+
+              <details class="seccion-plegable">
+                <summary>Capacidad e Internet <span class="contador-chip" id="contador-opciones"></span></summary>
+                <p class="campo-ayuda">Opcional — lo que dejes en blanco usa el flavor por defecto.</p>
+                <div id="d-lista-capacidad"></div>
+                <div class="fila-compacta">
+                  <select id="cap-nodo"></select>
+                  <input type="number" id="cap-vcpu" min="1" max="8" placeholder="vCPU">
+                  <input type="number" id="cap-ram" min="256" max="16384" placeholder="RAM MB">
+                  <input type="number" id="cap-disco" min="1" max="100" step="0.5" placeholder="Disco GB">
+                  <button type="button" id="cap-agregar" class="secundario chico">Fijar</button>
+                </div>
+                <div id="d-lista-internet"></div>
+                <div class="fila-compacta fila-compacta-2">
+                  <select id="net-nodo"></select>
+                  <button type="button" id="net-agregar" class="secundario chico">Dar acceso a internet</button>
+                </div>
+              </details>
+
+              <details class="seccion-plegable">
+                <summary>Importar desde plantilla</summary>
+                <p class="campo-ayuda">Crea un slice nuevo a partir de un .json exportado antes.</p>
+                <input type="file" id="plant-archivo" accept="application/json,.json">
+                <input type="text" id="plant-nombre" placeholder="Nombre del nuevo slice (opcional)">
+                <button type="button" id="plant-crear" class="secundario chico ancho">Crear desde plantilla</button>
+              </details>
+            </form>
+
+            <div class="panel-lateral-acciones">
+              <label class="opcion-desplegar"><input type="checkbox" id="d-desplegar"> Desplegar de inmediato (en cola)</label>
+              <button type="button" id="d-crear" class="primario ancho">Crear slice</button>
+              <p id="d-mensaje" class="mensaje oculto" role="status"></p>
+            </div>
+          </aside>
+
+          <section class="panel-lienzo">
+            <div class="modo-tabs" role="tablist">
+              <button class="modo-tab activo" data-modo="editar" role="tab" aria-selected="true">Editar topología</button>
+              <button class="modo-tab" data-modo="preview" role="tab" aria-selected="false">Vista previa con injertos</button>
+            </div>
+            <p class="lienzo-ayuda">
+              <span id="ayuda-editar">Clic (o Enter con el nodo enfocado) en dos nodos para alternar el enlace entre ambos. Tab para moverte entre nodos.</span>
+              <span id="ayuda-preview" class="oculto">Vista de solo lectura: incluye los injertos sobre la figura base.</span>
+            </p>
+            <div class="canvas-wrap">
+              <svg id="d-lienzo" class="lienzo-svg" viewBox="0 0 1000 620" role="application" aria-label="Lienzo de edición de topología">
+                <g class="capa-lienzo"></g>
+              </svg>
+              <svg id="d-preview" class="lienzo-svg oculto" viewBox="0 0 1000 620" role="img" aria-label="Vista previa de la topología con injertos">
+                <g class="capa-lienzo"></g>
+              </svg>
+              <div class="zoom-controles" id="zoom-controles-editar">
+                <button type="button" class="btn-zoom" data-zoom="in" aria-label="Acercar" title="Acercar"><svg class="ico"><use href="#i-zoom-mas"/></svg></button>
+                <button type="button" class="btn-zoom" data-zoom="out" aria-label="Alejar" title="Alejar"><svg class="ico"><use href="#i-zoom-menos"/></svg></button>
+                <button type="button" class="btn-zoom" data-zoom="fit" aria-label="Ajustar vista" title="Ajustar vista"><svg class="ico"><use href="#i-ajustar"/></svg></button>
+              </div>
+            </div>
+          </section>
         </div>
-      </div>
-    </div>
-  </section>
+      </section>
 
-  <!-- ---------- Tab: Trabajos (cola, R1) ---------- -->
-  <section id="tab-trabajos" class="panel-tab oculto">
-    <div class="encabezado-columna">
-      <h2>Cola de trabajos</h2>
-      <button id="btn-refrescar-trabajos" class="secundario chico">Refrescar</button>
-    </div>
-    <p class="campo-ayuda">Los despliegues y eliminaciones se encolan y se atienden en orden de llegada (FIFO). Esta tabla se actualiza sola.</p>
-    <table id="tabla-trabajos">
-      <thead><tr><th>Trabajo</th><th>Tipo</th><th>Slice</th><th>Usuario</th><th>Estado</th><th>Cola</th><th>Duración</th><th>Detalle</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="trabajos-vacio" class="campo-ayuda oculto">No hay trabajos todavía.</p>
-  </section>
+      <!-- ---------- Trabajos (cola, R1) ---------- -->
+      <section id="tab-trabajos" class="panel-tab oculto">
+        <div class="tarjeta">
+          <div class="barra-herramientas">
+            <button type="button" id="btn-refrescar-trabajos" class="secundario"><svg class="ico"><use href="#i-refrescar"/></svg> Refrescar</button>
+            <p class="campo-ayuda sin-margen">Los despliegues y eliminaciones se atienden en orden de llegada (FIFO). La tabla se actualiza sola.</p>
+          </div>
+          <div class="tabla-scroll">
+            <table id="tabla-trabajos" class="tabla">
+              <thead><tr><th>Trabajo</th><th>Tipo</th><th>Slice</th><th>Usuario</th><th>Estado</th><th>Cola</th><th>Duración</th><th>Detalle</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="trabajos-vacio" class="vacio oculto">No hay trabajos todavía.</p>
+        </div>
+      </section>
 
-  <!-- ---------- Tab: Red / broadcast (R5) ---------- -->
-  <section id="tab-red" class="panel-tab oculto">
-    <div class="encabezado-columna">
-      <h2>Control de broadcast por servidor</h2>
-      <button id="btn-refrescar-red" class="secundario chico">Refrescar</button>
-    </div>
-    <p class="campo-ayuda">Cada VLAN solo cruza el enlace de un servidor si tiene VMs en otro servidor; las demás quedan locales. Cada puerto de VM tiene límite de broadcast/multicast (storm control).</p>
-    <table id="tabla-red">
-      <thead><tr><th>Servidor</th><th>VLANs con VMs</th><th>Cruzan el uplink</th><th>Solo locales</th><th>Puertos con storm control</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="red-vacio" class="campo-ayuda oculto">No hay slices activos: ninguna VLAN cruza los uplinks.</p>
-  </section>
+      <!-- ---------- Red / broadcast (R5) ---------- -->
+      <section id="tab-red" class="panel-tab oculto">
+        <div class="tarjeta">
+          <div class="barra-herramientas">
+            <button type="button" id="btn-refrescar-red" class="secundario"><svg class="ico"><use href="#i-refrescar"/></svg> Refrescar</button>
+            <p class="campo-ayuda sin-margen">Una VLAN solo cruza el uplink de un servidor si tiene VMs en otro servidor. Cada puerto de VM tiene límite de broadcast/multicast (storm control).</p>
+          </div>
+          <div class="tabla-scroll">
+            <table id="tabla-red" class="tabla">
+              <thead><tr><th>Servidor</th><th>VLANs con VMs</th><th>Cruzan el uplink</th><th>Solo locales</th><th>Puertos con storm control</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="red-vacio" class="vacio oculto">No hay slices activos: ninguna VLAN cruza los uplinks.</p>
+        </div>
+      </section>
 
-  <!-- ---------- Tab: Recursos ---------- -->
-  <section id="tab-recursos" class="panel-tab oculto">
-    <h2>Consumo por host</h2>
-    <table id="tabla-hosts">
-      <thead><tr><th>Host</th><th>Zona</th><th>vCPU</th><th>RAM (MB)</th><th>Disco (GB)</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <h2>Mis slices activos</h2>
-    <table id="tabla-mis-slices">
-      <thead><tr><th>Nombre</th><th>Nodos</th><th>vCPU</th><th>RAM (MB)</th><th>Disco (GB)</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="recursos-total" class="campo-ayuda"></p>
-    <button id="btn-refrescar-recursos" class="secundario chico">Refrescar</button>
-  </section>
+      <!-- ---------- Recursos ---------- -->
+      <section id="tab-recursos" class="panel-tab oculto">
+        <div class="tarjetas-resumen" id="resumen-recursos"></div>
+        <div class="tarjeta">
+          <div class="barra-herramientas">
+            <h2 class="sin-margen">Uso por servidor</h2>
+            <div class="espaciador"></div>
+            <button type="button" id="btn-refrescar-recursos" class="secundario"><svg class="ico"><use href="#i-refrescar"/></svg> Refrescar</button>
+          </div>
+          <div id="barras-hosts" class="barras-hosts"></div>
+        </div>
+        <div class="tarjeta">
+          <h2>Mis slices activos</h2>
+          <div class="tabla-scroll">
+            <table id="tabla-mis-slices" class="tabla">
+              <thead><tr><th>Nombre</th><th>Nodos</th><th>vCPU</th><th>RAM (MB)</th><th>Disco (GB)</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="recursos-total" class="pie-tabla"></p>
+        </div>
+      </section>
+
+      <footer class="pie-app">
+        <span><b>Orquestador de Slices</b> · TEL141 Ingeniería de Redes Cloud · Grupo 2 · PUCP 2026</span>
+      </footer>
+    </main>
+  </div>
 </section>
+
+<!-- Cambiar contraseña -->
+<dialog id="dlg-clave" class="dialogo">
+  <form id="form-clave" method="dialog" novalidate>
+    <div class="dialogo-cabecera">
+      <h2>Cambiar contraseña</h2>
+      <button type="button" class="btn-icono" id="clave-cerrar" aria-label="Cerrar"><svg class="ico"><use href="#i-cerrar"/></svg></button>
+    </div>
+    <label for="clave-actual">Contraseña actual<input type="password" id="clave-actual" autocomplete="current-password"></label>
+    <label for="clave-nueva">Contraseña nueva (mínimo 8 caracteres)<input type="password" id="clave-nueva" autocomplete="new-password"></label>
+    <label for="clave-repetir">Repite la contraseña nueva<input type="password" id="clave-repetir" autocomplete="new-password"></label>
+    <p id="clave-mensaje" class="mensaje oculto" role="status"></p>
+    <div class="dialogo-acciones">
+      <button type="button" class="secundario" id="clave-cancelar">Cancelar</button>
+      <button type="submit" class="primario" id="clave-guardar">Guardar</button>
+    </div>
+  </form>
+</dialog>
 
 <script src="app.js"></script>
 </body>

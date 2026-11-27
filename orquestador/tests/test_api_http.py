@@ -192,6 +192,53 @@ class TestApiHttp(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(recursos["total_mio"]["vcpu"], 2)
 
+    # -- cuenta: cambiar contraseña (GUI) ------------------------------------
+    def test_cambiar_contrasena(self):
+        token_ana, _ = self._token("ana", "clave-usuario-1")
+        status, cuerpo = _peticion("POST", f"{self.base}/cuenta/contrasena", token=token_ana,
+                                   cuerpo={"actual": "clave-usuario-1", "nueva": "otra-clave-22"})
+        self.assertEqual(status, 200, cuerpo)
+        status, _ = _peticion("POST", f"{self.base}/login",
+                              cuerpo={"usuario": "ana", "contrasena": "clave-usuario-1"})
+        self.assertEqual(status, 401)
+        _, rol = self._token("ana", "otra-clave-22")
+        self.assertEqual(rol, "usuario")                 # el rol no cambia
+
+    def test_cambiar_contrasena_rechaza_actual_incorrecta_o_nueva_corta(self):
+        token_ana, _ = self._token("ana", "clave-usuario-1")
+        for cuerpo in ({"actual": "mala", "nueva": "otra-clave-22"},
+                       {"actual": "clave-usuario-1", "nueva": "corta"},
+                       {"actual": "clave-usuario-1", "nueva": "clave-usuario-1"}):
+            status, resp = _peticion("POST", f"{self.base}/cuenta/contrasena",
+                                     token=token_ana, cuerpo=cuerpo)
+            self.assertEqual(status, 400, resp)        # 400: la sesión sigue válida
+        self._token("ana", "clave-usuario-1")          # la clave no cambió
+
+    def test_cambiar_contrasena_requiere_token(self):
+        status, _ = _peticion("POST", f"{self.base}/cuenta/contrasena",
+                              cuerpo={"actual": "x", "nueva": "yyyyyyyy"})
+        self.assertEqual(status, 401)
+
+    # -- consola de una VM (GUI) --------------------------------------------
+    def test_consola_de_un_nodo_propio(self):
+        token_ana, _ = self._token("ana", "clave-usuario-1")
+        _, creado = _peticion("POST", f"{self.base}/slices", token=token_ana,
+                              cuerpo={**self._spec_lineal("con-ana"), "desplegar": True})
+        status, cuerpo = _peticion("POST", f"{self.base}/slices/{creado['id']}/consola",
+                                   token=token_ana, cuerpo={"nodo": "vm1"})
+        self.assertEqual(status, 200, cuerpo)
+        self.assertTrue(cuerpo["token"])
+        self.assertIn("puerto", cuerpo)
+
+    def test_consola_de_slice_ajeno_no_se_emite(self):
+        token_ana, _ = self._token("ana", "clave-usuario-1")
+        _, creado = _peticion("POST", f"{self.base}/slices", token=token_ana,
+                              cuerpo={**self._spec_lineal("con-ana2"), "desplegar": True})
+        token_brighit, _ = self._token("brighit", "clave-admin-1")
+        status, _ = _peticion("POST", f"{self.base}/slices/{creado['id']}/consola",
+                              token=token_brighit, cuerpo={"nodo": "vm1"})
+        self.assertIn(status, (400, 403, 404))
+
 
 if __name__ == "__main__":
     unittest.main()
