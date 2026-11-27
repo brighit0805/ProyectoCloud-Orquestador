@@ -62,6 +62,7 @@ from . import composicion, control_broadcast, direccionamiento, network_manager,
 from .cola_trabajos import ColaTrabajos, ErrorCola
 from .driver_linux import DriverLinux
 from .monitoreo_uso import ErrorMedicion, MedidorUso, destino_ssh
+from .monitor_reconciliador import ReporteReconciliacion, reconciliar as _reconciliar
 from .persistencia_sqlite import AlmacenSQLite, ErrorAlmacen, es_ruta_sqlite
 import config_cluster as cfg_cluster
 from .models import (
@@ -949,6 +950,24 @@ class ServicioSlices:
         with ThreadPoolExecutor(max_workers=max(1, len(hosts))) as ex:
             filas = list(ex.map(medir, hosts))      # los hosts se miden a la vez
         return {"intervalo_s": intervalo_s, "hosts": filas}
+
+    def reconciliar(self, usuario: str | None = None) -> list[ReporteReconciliacion]:
+        """Monitoreo (HLD dominio D): compara el estado DESEADO (slices que el
+        orquestador tiene registrados como ACTIVO) contra el estado REAL que
+        el driver puede confirmar (``verificar_vm``, ver monitor_reconciliador.py).
+        Detecta, por ejemplo, una VM apagada o borrada por fuera del
+        orquestador -- pero no corrige nada, solo reporta.
+
+        Con ``usuario=None`` (uso administrativo) reconcilia TODOS los
+        slices activos; con un usuario, solo los suyos -- mismo patrón de
+        aislamiento que el resto del servicio."""
+        with self._lock:
+            self._sincronizar()
+            slices = [s for s in self._slices.values()
+                     if usuario is None or s.owner == usuario]
+            hosts = list(self._hosts_base)
+            driver = self._driver
+        return _reconciliar(slices, hosts, driver, composicion.clave_de)
 
     def listar_imagenes(self) -> list[dict[str, Any]]:
         with self._lock:

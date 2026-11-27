@@ -376,6 +376,29 @@ def _cmd_monitoreo(svc: ServicioSlices, a: argparse.Namespace) -> None:
     _salida(a, r, "\n".join(texto))
 
 
+def _cmd_reconciliar(svc: ServicioSlices, a: argparse.Namespace) -> None:
+    reportes = svc.reconciliar(a.usuario)
+    if not reportes:
+        _salida(a, [], "No tiene slices activos que reconciliar.")
+        return
+    texto = []
+    for r in reportes:
+        if r.error:
+            texto.append(f"⚠ {r.nombre} ({r.slice_id}): {r.error}")
+        elif r.coincide:
+            texto.append(f"✓ {r.nombre} ({r.slice_id}): coincide con el estado real")
+        else:
+            texto.append(f"✗ {r.nombre} ({r.slice_id}): {len(r.discrepancias)} discrepancia(s)")
+            for d in r.discrepancias:
+                texto.append(f"    {d.nodo} ({d.nombre_vm}, host {d.host_id}): "
+                             f"se esperaba {d.esperado}, el driver reporta {d.real}")
+    datos = [{"slice_id": r.slice_id, "nombre": r.nombre, "coincide": r.coincide, "error": r.error,
+             "discrepancias": [{"nodo": d.nodo, "nombre_vm": d.nombre_vm, "host_id": d.host_id,
+                                "esperado": d.esperado, "real": d.real} for d in r.discrepancias]}
+            for r in reportes]
+    _salida(a, datos, "\n".join(texto))
+
+
 def _cmd_imagen(svc: ServicioSlices, a: argparse.Namespace) -> None:
     if a.sub == "listar":
         datos = svc.listar_imagenes()
@@ -451,6 +474,7 @@ def construir_parser() -> argparse.ArgumentParser:
     sub.add_parser("recursos", help="consumo de recursos del sistema y de sus slices")
     m = sub.add_parser("monitoreo", help="uso REAL de CPU/RAM de cada host y VM (solo driver real; lee por SSH)")
     m.add_argument("--intervalo", type=float, default=5.0, help="segundos entre las dos muestras (def. 5)")
+    sub.add_parser("reconciliar", help="compara sus slices ACTIVOS contra el estado real (detecta VMs caidas/borradas por fuera del orquestador)")
     z = sub.add_parser("zona", help="zonas de disponibilidad reales del cluster (hosts por zona)").add_subparsers(dest="sub", required=True)
     z.add_parser("listar", help="lista las zonas detectadas y los hosts de cada una")
     r = sub.add_parser("red", help="estado de la red del clúster (R5)").add_subparsers(dest="sub", required=True)
@@ -544,7 +568,7 @@ def main(argv: list[str] | None = None, servicio: ServicioSlices | None = None) 
             svc = _construir_servicio_linux_real(args.estado)
         else:
             svc = ServicioSlices(ruta_estado=args.estado)
-        necesita_usuario = (args.comando in ("slice", "recursos")
+        necesita_usuario = (args.comando in ("slice", "recursos", "reconciliar")
                             or (args.comando == "imagen" and args.sub == "importar")
                             or (args.comando == "consola" and args.sub == "emitir"))
         if necesita_usuario and not args.usuario:
@@ -552,6 +576,7 @@ def main(argv: list[str] | None = None, servicio: ServicioSlices | None = None) 
         {"topologias": _cmd_topologias, "flavors": _cmd_flavors, "slice": _cmd_slice,
          "recursos": _cmd_recursos, "imagen": _cmd_imagen, "consola": _cmd_consola,
          "zona": _cmd_zona, "red": _cmd_red, "monitoreo": _cmd_monitoreo,
+         "reconciliar": _cmd_reconciliar,
          "mantenimiento": _cmd_mantenimiento}[args.comando](svc, args)
         return 0
     except ErrorServicio as exc:
