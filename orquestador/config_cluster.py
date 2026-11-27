@@ -115,10 +115,12 @@ SWITCH_OVS = {
 # enlace (C-VLAN, VLAN_INICIO/VLAN_FIN arriba) siguen siendo una por enlace,
 # sin cambios, y las VMs no ven ni usan esta segunda etiqueta para nada (ver
 # driver_linux._interfaz_xml -- su puerto OVS sigue siendo access, intacto).
-# "qinq": False (como hoy) = comportamiento IDÉNTICO al de siempre, un solo
-# tag por enlace, sin tocar el modo del puerto del uplink.
+# "qinq": True activado 26-nov tras probar a mano (por SSH, con vigía de
+# auto-reversion de 30s como red de seguridad) que vlan_mode=dot1q-tunnel en
+# ens4 de server1 NO corta la gestion SSH -- confirmado con 'echo SIGUE-VIVO'
+# mientras el puerto estaba en ese modo.
 CONTROL_BROADCAST = {"limite_pps": 200, "rafaga": 100, "vlan_sin_uso": 4094, "storm_control": True,
-                     "qinq": False, "qinq_svlan": 100, "qinq_ethertype": "0x8100"}
+                     "qinq": True, "qinq_svlan": 100, "qinq_ethertype": "0x8100"}
 
 
 def uri(worker: str) -> str:
