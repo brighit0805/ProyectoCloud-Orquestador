@@ -147,7 +147,7 @@ class TestComandosQinQ(unittest.TestCase):
 
     def test_uplink_lleva_solo_svlans(self):
         s = sorted([self.s1.vlan_servicio, self.s2.vlan_servicio])
-        self.assertIn(f"sudo ovs-vsctl set port ens4 vlan_mode=trunk trunks={s[0]},{s[1]}",
+        self.assertIn(f"sudo ovs-vsctl set port ens4 vlan_mode=native-untagged tag=0 trunks={s[0]},{s[1]}",
                       self.cmds)
         c_vlan = self.s1.enlaces[0].vlan_id
         self.assertNotIn(f"trunks={c_vlan}", " ".join(c for c in self.cmds if " ens4 " in c))
@@ -177,7 +177,7 @@ class TestComandosQinQ(unittest.TestCase):
 
     def test_sin_slices_no_pasa_nada_por_el_uplink(self):
         cmds = cb.comandos_host("server1", cb.calcular_plan([]), self.cfg)
-        self.assertIn("sudo ovs-vsctl set port ens4 vlan_mode=trunk trunks=4094", cmds)
+        self.assertIn("sudo ovs-vsctl set port ens4 vlan_mode=native-untagged tag=0 trunks=4094", cmds)
         self.assertFalse(any("add-port br-int qi" in c for c in cmds))
         limpiar = [c for c in cmds if c.startswith("for p in")]
         self.assertTrue(limpiar and all('case "  " in' in c for c in limpiar))   # borra todos
@@ -194,15 +194,44 @@ class TestComandosQinQ(unittest.TestCase):
     def test_ovs1_poda_por_svlan(self):
         s = sorted([self.s1.vlan_servicio, self.s2.vlan_servicio])
         cmds = cb.comandos_switch(self.plan, self.cfg)
-        self.assertIn(f"sudo ovs-vsctl set port eth1 vlan_mode=trunk trunks={s[0]},{s[1]}", cmds)
-        self.assertIn("sudo ovs-vsctl set port eth3 vlan_mode=trunk trunks=4094", cmds)
+        self.assertIn(f"sudo ovs-vsctl set port eth1 vlan_mode=native-untagged tag=0 trunks={s[0]},{s[1]}", cmds)
+        self.assertIn("sudo ovs-vsctl set port eth3 vlan_mode=native-untagged tag=0 trunks=4094", cmds)
 
     def test_sin_qinq_queda_como_antes(self):
         cfg = cb.ConfigBroadcast(bridge_por_host={"server1": "br-int"},
                                  uplink_por_host={"server1": "ens4"})
         cmds = cb.comandos_host("server1", self.plan, cfg)
         self.assertFalse(any("br-qinq" in c or "dot1q-tunnel" in c for c in cmds))
-        self.assertTrue(any(c.startswith("sudo ovs-vsctl set port ens4 vlan_mode=trunk") for c in cmds))
+        self.assertIn(f"sudo ovs-vsctl set port ens4 vlan_mode=native-untagged tag=0 "
+                      f"trunks={cb._trunks(self.plan.vlans_que_salen('server1'), 4094)}", cmds)
+
+    def test_puente_nativo_antes_de_mover_el_uplink(self):
+        # La gestión (sin etiqueta) sigue llegando a br-int por qnat-int/qnat-ext,
+        # y ese puente existe ANTES de sacar ens4 de br-int.
+        i_int = next(i for i, c in enumerate(self.cmds) if "add-port br-int qnat-int" in c)
+        i_ext = next(i for i, c in enumerate(self.cmds) if "add-port br-qinq qnat-ext" in c)
+        i_mover = next(i for i, c in enumerate(self.cmds) if "del-port br-int ens4" in c)
+        self.assertLess(max(i_int, i_ext), i_mover)
+        self.assertIn("set port qnat-int vlan_mode=access tag=0", self.cmds[i_int])
+        self.assertIn("set port qnat-ext vlan_mode=access tag=0", self.cmds[i_ext])
+
+    def test_la_limpieza_no_borra_el_puente_nativo(self):
+        # El patrón de limpieza es qi<número>/qe<número>: qnat-* no calza.
+        import fnmatch
+        self.assertFalse(fnmatch.fnmatch("qnat-int", "qi[0-9]*"))
+        self.assertFalse(fnmatch.fnmatch("qnat-ext", "qe[0-9]*"))
+
+    def test_revertir_devuelve_el_uplink_a_br_int(self):
+        rev = cb.comandos_revertir_host("server1", self.cfg)
+        self.assertEqual(rev[0], "sudo ovs-vsctl --if-exists del-port br-qinq ens4 "
+                                 "-- --may-exist add-port br-int ens4")
+        self.assertIn("sudo ovs-vsctl clear port ens4 vlan_mode", rev)
+        sin_qinq = cb.ConfigBroadcast(bridge_por_host={"server1": "br-int"},
+                                      uplink_por_host={"server1": "ens4"})
+        self.assertFalse(any("br-qinq" in c for c in cb.comandos_revertir_host("server1", sin_qinq)))
+
+    def test_ovs1_no_agrega_una_tercera_etiqueta(self):
+        self.assertFalse(any("dot1q-tunnel" in c for c in cb.comandos_switch(self.plan, self.cfg)))
 
     @unittest.skipUnless(shutil.which("sh"), "requiere sh")
     def test_el_comando_remoto_es_sh_valido(self):
@@ -230,9 +259,12 @@ class TestConfigQinQ(unittest.TestCase):
 
     def test_config_cluster_real(self):
         import config_cluster
-        q = cb.ConfigBroadcast.desde_modulo(config_cluster).qinq
-        self.assertIsNotNone(q)
-        self.assertEqual(q.ethertype, "802.1ad")
+        # Viene apagado hasta probarlo en el clúster, pero ya configurado.
+        self.assertIsNone(cb.ConfigBroadcast.desde_modulo(config_cluster).qinq)
+        self.assertEqual(config_cluster.QINQ["ethertype"], "802.1ad")
+        q = cb.ConfigBroadcast.desde_modulo(types.SimpleNamespace(
+            WORKERS=config_cluster.WORKERS, QINQ={**config_cluster.QINQ, "activo": True})).qinq
+        self.assertEqual((q.bridge, q.ethertype, q.mtu_vm), ("br-qinq", "802.1ad", 1496))
 
 
 class TestMTU(unittest.TestCase):

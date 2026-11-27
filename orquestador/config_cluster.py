@@ -84,18 +84,44 @@ VLAN_INICIO, VLAN_FIN = 3000, 3099
 #    que el bridge exista; si falla, solo queda un warning en el log.
 # Los comandos usan 'sudo ovs-vsctl' y 'sudo ovs-ofctl': requieren NOPASSWD para esos
 # binarios, igual que iptables para el SSH entrante.
-SWITCH_OVS = None
+#
+# Mapeo server -> puerto de ovs1, confirmado el 26-nov cruzando el diagrama de
+# topología oficial (VNRT, panel "doble click" de cada nodo) con las MACs
+# reales del clúster:
+#   - Cada server tiene DOS interfaces: 'ens4' (uplink de gestión, va a MPLink1,
+#     es la que ya podamos en WORKERS/uplink de arriba) y 'ens3' (va directo a
+#     ovs1, HOY sin agregar a ningún bridge del propio server -- no lleva
+#     tráfico real de las VMs todavía).
+#   - server1.ens3 (MAC fa:16:3e:f3:3d:13) <-> ovs1.ens4 (Enlace 2 del VNRT)
+#   - server2.ens3 (MAC fa:16:3e:75:a3:97) <-> ovs1.ens5 (Enlace 3 del VNRT)
+#   - server3.ens3 (MAC fa:16:3e:8f:37:7e) <-> ovs1.ens6 (Enlace 4 del VNRT)
+# ovs1 tiene su propia IP de gestión en un puerto interno separado (tipo
+# "internal", no ens4/ens5/ens6), así que podar VLANs en estos tres puertos no
+# le corta el acceso SSH a ovs1 mismo (confirmado en vivo).
+# OJO: como ens3 no está en ningún bridge del lado server todavía, esta regla
+# no tiene efecto visible en el tráfico actual de las VMs (que hoy viaja por
+# MPLink1 vía ens4/br-int) -- cumple el pedido de Germán de "aplicar reglas en
+# OVS1", pero si el diseño final requiere que las VLANs de los enlaces crucen
+# por ovs1 de verdad, falta un paso aparte: agregar ens3 al bridge de cada
+# server (fuera del alcance de este cambio).
+SWITCH_OVS = {
+    "destino_ssh": "ubuntu@192.168.201.5",
+    "puerto_por_host": {"server1": "ens4", "server2": "ens5", "server3": "ens6"},
+}
 CONTROL_BROADCAST = {"limite_pps": 200, "rafaga": 100, "vlan_sin_uso": 4094, "storm_control": True}
 
 # Aislamiento entre slices con QinQ (802.1ad), indicado por Germán (25-nov): etiqueta externa
 # (S-VLAN, rango 2000-2999) = una por slice; etiqueta interna (C-VLAN) = la VLAN de cada enlace.
 # Con "activo": True, en cada server se crea el bridge 'br-qinq', el uplink (ens4) pasa de
-# br-int a br-qinq y cada slice sale por un puerto dot1q-tunnel con su S-VLAN.
+# br-int a br-qinq y cada slice sale por un puerto dot1q-tunnel con su S-VLAN. Lo no etiquetado
+# (gestión) sigue llegando a br-int por el puente qnat-int/qnat-ext, y si el comando no se
+# confirma en 30 s el vigía de driver_linux devuelve ens4 a br-int solo.
+# Viene APAGADO: activarlo cuando se pruebe en el clúster (ver PR de QinQ).
 #  - ethertype: "802.1ad" (TPID 0x88a8, estándar) o "802.1q" (0x8100) si ovs1 no reenvía 802.1ad.
 #  - mtu_vm: MTU de las interfaces de enlace de las VMs (dos etiquetas = 8 bytes más por trama).
 # Para volver a una sola etiqueta: "activo": False y, en cada server, devolver el uplink a br-int:
 #   sudo ovs-vsctl --if-exists del-port br-qinq ens4 -- --may-exist add-port br-int ens4
-QINQ = {"activo": True, "bridge": "br-qinq", "ethertype": "802.1ad", "mtu_vm": 1496}
+QINQ = {"activo": False, "bridge": "br-qinq", "ethertype": "802.1ad", "mtu_vm": 1496}
 
 
 def uri(worker: str) -> str:

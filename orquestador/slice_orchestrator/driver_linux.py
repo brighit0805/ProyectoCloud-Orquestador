@@ -358,14 +358,63 @@ class DriverLinux:
         self._ejecutar_ssh(f"{usuario}@{host}", comando)
 
     @staticmethod
-    def _ejecutar_ssh(destino: str, comando: str) -> None:
+    def _ejecutar_ssh(destino: str, comando: str, timeout_s: int = 120) -> None:
+        # timeout_s en 120s (antes 60s): encontrado en vivo el 26-nov que el
+        # servidor puede tardar más de 60s en responder por SSH justo cuando
+        # está ocupado arrancando/copiando el disco de una VM al mismo tiempo
+        # (coincidencia de carga, no un comando lento: los mismos comandos,
+        # probados a mano con el servidor libre, tardan <1s). El comando
+        # remoto siempre terminaba bien solo que el cliente local se rendía
+        # antes de tiempo -- este colchón evita que un pico de carga puntual
+        # dispare el timeout antes de que el servidor alcance a responder.
         r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                             destino, comando],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, timeout=timeout_s)
         if r.returncode != 0:
             raise DriverLinuxError(
                 f"No se pudo ejecutar en {destino}: {comando!r} -> rc={r.returncode} "
                 f"stderr={r.stderr.strip()}")
+
+    @staticmethod
+    def _ejecutar_con_auto_reversion(destino: str, cmds: list[str], cmds_revertir: list[str],
+                                      espera_revertir_s: int = 30) -> None:
+        """Red de seguridad para comandos que pueden cortar la conexión de
+        gestión (p. ej. cambiar el modo VLAN del puerto uplink): equivalente
+        a lo que hace ``netplan try`` para la red del sistema operativo, pero
+        aplicado a comandos OVS sueltos.
+
+        Encontrado en vivo el 26-nov: si uno de estos comandos deja mal
+        configurado el puerto (o simplemente la sesión SSH que los aplica se
+        corta a mitad de camino por cualquier otro motivo), antes esto dejaba
+        el servidor inalcanzable para siempre -- había que entrar por consola
+        local a arreglarlo a mano. Con esto, un vigía en segundo plano en el
+        PROPIO servidor (no en el cliente SSH, que puede perder la conexión)
+        revierte solo si no se confirma a tiempo:
+
+          1. Se lanza en background (``disown``, stdin/stdout/stderr
+             redirigidos para no depender de esta sesión SSH) un vigía que
+             espera ``espera_revertir_s`` segundos y, si no encuentra el
+             archivo marcador, corre ``cmds_revertir``.
+          2. Se corren los comandos reales.
+          3. Si terminan bien, se crea el archivo marcador -- el vigía lo ve
+             y no revierte nada.
+
+        Si la sesión SSH se corta ANTES del paso 3 (el escenario que nos
+        pasó), el marcador nunca se crea y el vigía revierte solo, sin
+        depender de que nadie vuelva a conectarse."""
+        if not cmds_revertir:
+            # Nada que revertir (p. ej. sin uplink configurado): corre tal cual.
+            DriverLinux._ejecutar_ssh(destino, " && ".join(cmds))
+            return
+        marcador = f"/tmp/.orq_ctrlbcast_ok_{os.getpid()}_{int(time.time())}"
+        revertir = " ; ".join(cmds_revertir)
+        vigia = (f"(sleep {espera_revertir_s}; "
+                 f"if [ ! -f {marcador} ]; then {revertir}; fi; "
+                 f"rm -f {marcador}) "
+                 f"</dev/null >/tmp/.orq_ctrlbcast_revertir.log 2>&1 & disown")
+        real = " && ".join(cmds)
+        comando = f"{vigia}; {real} && touch {marcador}"
+        DriverLinux._ejecutar_ssh(destino, comando)
 
     # --------------------------------------------- control de broadcast (R5)
     def aplicar_control_broadcast(self, plan, cfg, uri_por_host: dict[str, str]) -> dict:
@@ -376,7 +425,8 @@ class DriverLinux:
 
         Es de mejor esfuerzo: si un servidor falla, se reporta y se sigue con
         los demás; nunca revierte un slice ya desplegado por esto."""
-        from .control_broadcast import comandos_host, comandos_switch
+        from .control_broadcast import (comandos_host, comandos_revertir_host,
+                                         comandos_revertir_switch, comandos_switch)
 
         reporte: dict = {"hosts": {}, "switch": None, "errores": []}
         hosts = sorted(set(plan.vlans_por_host) | set(cfg.bridge_por_host))
@@ -393,7 +443,9 @@ class DriverLinux:
             try:
                 if uri is None:
                     raise DriverLinuxError(f"sin URI conocida para {host}")
-                self._ejecutar_remoto(uri, " && ".join(cmds))
+                usuario, destino_host = self._usuario_y_host(uri)
+                self._ejecutar_con_auto_reversion(
+                    f"{usuario}@{destino_host}", cmds, comandos_revertir_host(host, cfg))
             except DriverLinuxError as exc:
                 logger.warning("Control de broadcast no aplicado en %s: %s", host, exc)
                 reporte["errores"].append(f"{host}: {exc}")
@@ -403,7 +455,9 @@ class DriverLinux:
             self.historial.append(("control_broadcast", cfg.switch.destino_ssh, "switch"))
             if self.modo == ModoDriver.REAL:
                 try:
-                    self._ejecutar_ssh(cfg.switch.destino_ssh, " && ".join(cmds))
+                    revertir_por_host = comandos_revertir_switch(cfg)
+                    revertir = [c for cs in revertir_por_host.values() for c in cs]
+                    self._ejecutar_con_auto_reversion(cfg.switch.destino_ssh, cmds, revertir)
                 except DriverLinuxError as exc:
                     logger.warning("Poda de VLANs en el switch no aplicada: %s", exc)
                     reporte["errores"].append(f"switch: {exc}")

@@ -200,6 +200,12 @@ class ConfigBroadcast:
                    storm_control=bool(bc.get("storm_control", d.storm_control)))
 
 
+def _modo_poda(vlans: set[int], cfg: "ConfigBroadcast") -> str:
+    """Modo de un puerto podado: pasa lo no etiquetado (gestión) y solo las
+    VLANs indicadas (ver comandos_host)."""
+    return f"vlan_mode=native-untagged tag=0 trunks={_trunks(vlans, cfg.vlan_sin_uso)}"
+
+
 def _trunks(vlans: set[int], vlan_sin_uso: int) -> str:
     # En OVS, ``trunks`` vacío significa "todas las VLANs": para no dejar pasar
     # ninguna se deja solo una VLAN reservada que nadie usa.
@@ -217,8 +223,12 @@ def comandos_host(host: str, plan: PlanBroadcast, cfg: ConfigBroadcast) -> list[
     if uplink and cfg.qinq is not None:
         cmds.extend(_comandos_qinq(host, bridge, uplink, plan, cfg))
     elif uplink:
-        cmds.append(f"sudo ovs-vsctl set port {uplink} vlan_mode=trunk "
-                    f"trunks={_trunks(plan.vlans_que_salen(host), cfg.vlan_sin_uso)}")
+        # NUNCA vlan_mode=trunk a secas (encontrado en vivo el 26-nov): el
+        # uplink también lleva la gestión (SSH) SIN etiqueta y "trunk" la
+        # descarta, cortando la sesión que aplica el comando.
+        # "native-untagged" + tag=0 deja pasar lo no etiquetado como siempre
+        # y, además, solo las VLANs de `trunks`.
+        cmds.append(f"sudo ovs-vsctl set port {uplink} {_modo_poda(plan.vlans_que_salen(host), cfg)}")
     if cfg.storm_control:
         cookie = f"0x{cfg.cookie:x}"
         # Se borra solo lo nuestro (por cookie) y se vuelve a crear: idempotente.
@@ -233,6 +243,9 @@ def comandos_host(host: str, plan: PlanBroadcast, cfg: ConfigBroadcast) -> list[
             cmds.append(f"{of13} add-flow {bridge} \"cookie={cookie},priority=200,dl_src={p.mac},"
                         f"dl_dst={BROADCAST_Y_MULTICAST},actions=meter:{i},NORMAL\"")
     return cmds
+
+
+PUENTE_NATIVO = ("qnat-int", "qnat-ext")       # br-int <-> br-qinq, solo tráfico sin etiqueta
 
 
 def puertos_patch(vlan_servicio: int) -> tuple[str, str]:
@@ -257,14 +270,22 @@ def _comandos_qinq(host: str, bridge: str, uplink: str, plan: PlanBroadcast,
     assert q is not None
     ext = q.bridge
     vsctl = "sudo ovs-vsctl"
+    ni, ne = PUENTE_NATIVO
     cmds = [
         # Sin esto OVS solo procesa una etiqueta y dot1q-tunnel no funciona.
         f"{vsctl} set Open_vSwitch . other_config:vlan-limit=2",
         f"{vsctl} --may-exist add-br {ext}",
+        # Puente para lo NO etiquetado (la gestión que hoy entra por el uplink
+        # a br-int): se crea ANTES de mover el uplink, así ese tráfico sigue
+        # llegando a br-int. Puertos access con tag=0: no dejan pasar ninguna
+        # VLAN de enlace, que solo cruza por los puertos QinQ de cada slice.
+        f"{vsctl} --may-exist add-port {bridge} {ni} "
+        f"-- set interface {ni} type=patch options:peer={ne} -- set port {ni} vlan_mode=access tag=0",
+        f"{vsctl} --may-exist add-port {ext} {ne} "
+        f"-- set interface {ne} type=patch options:peer={ni} -- set port {ne} vlan_mode=access tag=0",
         # El uplink pasa del bridge de las VMs al bridge QinQ (solo la primera vez).
         f"{vsctl} --if-exists del-port {bridge} {uplink} -- --may-exist add-port {ext} {uplink}",
-        f"{vsctl} set port {uplink} vlan_mode=trunk "
-        f"trunks={_trunks(plan.svlans_que_salen(host), cfg.vlan_sin_uso)}",
+        f"{vsctl} set port {uplink} {_modo_poda(plan.svlans_que_salen(host), cfg)}",
     ]
     lado_int: list[str] = []
     lado_ext: list[str] = []
@@ -294,7 +315,37 @@ def comandos_switch(plan: PlanBroadcast, cfg: ConfigBroadcast) -> list[str]:
     Con QinQ, ovs1 solo ve S-VLANs: se poda por slice."""
     if cfg.switch is None:
         return []
+    # ovs1 NO usa dot1q-tunnel: la trama ya llega con las dos etiquetas desde
+    # el servidor y ovs1 solo reenvía por la externa (ponerle otra la dejaría
+    # con tres). Mismo modo native-untagged que en comandos_host.
     salen = plan.svlans_que_salen if cfg.qinq is not None else plan.vlans_que_salen
-    return [f"sudo ovs-vsctl set port {puerto} vlan_mode=trunk "
-            f"trunks={_trunks(salen(host), cfg.vlan_sin_uso)}"
+    return [f"sudo ovs-vsctl set port {puerto} {_modo_poda(salen(host), cfg)}"
             for host, puerto in sorted(cfg.switch.puerto_por_host.items())]
+
+
+def comandos_revertir_host(host: str, cfg: ConfigBroadcast) -> list[str]:
+    """Deshace SOLO el cambio riesgoso del uplink (lo corre el vigía de
+    driver_linux._ejecutar_con_auto_reversion si el comando real no se
+    confirma a tiempo). Con QinQ, además devuelve el uplink a br-int. No toca
+    storm control (flows/meters): eso no puede cortar la gestión."""
+    uplink = cfg.uplink_por_host.get(host)
+    bridge = cfg.bridge_por_host.get(host)
+    if not uplink:
+        return []
+    cmds = []
+    if cfg.qinq is not None and bridge:
+        cmds.append(f"sudo ovs-vsctl --if-exists del-port {cfg.qinq.bridge} {uplink} "
+                    f"-- --may-exist add-port {bridge} {uplink}")
+    return cmds + [f"sudo ovs-vsctl clear port {uplink} vlan_mode",
+                   f"sudo ovs-vsctl clear port {uplink} tag",
+                   f"sudo ovs-vsctl clear port {uplink} trunks"]
+
+
+def comandos_revertir_switch(cfg: ConfigBroadcast) -> dict[str, list[str]]:
+    """Igual que ``comandos_revertir_host`` para cada puerto de ovs1."""
+    if cfg.switch is None:
+        return {}
+    return {host: [f"sudo ovs-vsctl clear port {puerto} vlan_mode",
+                   f"sudo ovs-vsctl clear port {puerto} tag",
+                   f"sudo ovs-vsctl clear port {puerto} trunks"]
+            for host, puerto in cfg.switch.puerto_por_host.items()}
