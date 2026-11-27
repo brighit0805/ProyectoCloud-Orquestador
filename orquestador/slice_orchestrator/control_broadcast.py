@@ -115,6 +115,12 @@ class ConfigBroadcast:
     vlan_sin_uso: int = 4094                  # trunks vacío en OVS = TODAS las VLANs
     cookie: int = 0xB0CA57
     storm_control: bool = True
+    # Q-in-Q / 802.1ad (R5, pedido por Germán 25-nov-2026 tras su objeción al
+    # límite de 4094 VLAN de 802.1Q). Ver nota larga en comandos_host() sobre
+    # qué resuelve y qué no esta primera versión.
+    qinq: bool = False
+    qinq_svlan: int | None = None              # UNA sola S-VLAN, fija, para todo el clúster
+    qinq_ethertype: str = "0x8100"             # 0x88a8 (802.1ad "real") si el switch de arriba lo soporta
 
     @classmethod
     def desde_modulo(cls, cfg: Any) -> "ConfigBroadcast":
@@ -133,7 +139,10 @@ class ConfigBroadcast:
                    limite_pps=int(bc.get("limite_pps", d.limite_pps)),
                    rafaga=int(bc.get("rafaga", d.rafaga)),
                    vlan_sin_uso=int(bc.get("vlan_sin_uso", d.vlan_sin_uso)),
-                   storm_control=bool(bc.get("storm_control", d.storm_control)))
+                   storm_control=bool(bc.get("storm_control", d.storm_control)),
+                   qinq=bool(bc.get("qinq", d.qinq)),
+                   qinq_svlan=(int(bc["qinq_svlan"]) if bc.get("qinq_svlan") is not None else None),
+                   qinq_ethertype=str(bc.get("qinq_ethertype", d.qinq_ethertype)))
 
 
 def _trunks(vlans: set[int], vlan_sin_uso: int) -> str:
@@ -151,8 +160,47 @@ def comandos_host(host: str, plan: PlanBroadcast, cfg: ConfigBroadcast) -> list[
     cmds = [f"sudo ovs-vsctl set bridge {bridge} protocols=OpenFlow10,OpenFlow13"]
     uplink = cfg.uplink_por_host.get(host)
     if uplink:
-        cmds.append(f"sudo ovs-vsctl set port {uplink} vlan_mode=trunk "
-                    f"trunks={_trunks(plan.vlans_que_salen(host), cfg.vlan_sin_uso)}")
+        trunks = _trunks(plan.vlans_que_salen(host), cfg.vlan_sin_uso)
+        if cfg.qinq and cfg.qinq_svlan is not None:
+            # Q-in-Q (802.1ad): el puerto deja de ser un trunk 802.1Q plano y
+            # pasa a "dot1q-tunnel" -- OVS añade SIEMPRE una segunda etiqueta
+            # exterior (la S-VLAN fija del clúster) a todo lo que sale por
+            # este puerto, y la quita a todo lo que entra, ANTES de que el
+            # resto del pipeline vea el paquete. La poda de VLANs de siempre
+            # (`trunks`, la lista de C-VLAN que de verdad cruzan a otro
+            # servidor) se conserva tal cual -- sigue restringiendo qué
+            # C-VLAN interiores puede llevar el túnel, ahora dentro de la
+            # S-VLAN exterior en vez de a secas.
+            #
+            # Qué multiplica y qué no (ver docstring de ConfigBroadcast):
+            # dentro de ESTE clúster la C-VLAN sigue siendo única por enlace
+            # (el VLANAllocator no cambia) -- lo que gana con esto es que el
+            # backbone compartido (ovs1 y lo que haya detrás) puede traer
+            # tráfico de OTRO grupo/clúster con sus propias C-VLAN sin que
+            # choquen con las nuestras, porque cada uno queda envuelto en su
+            # propia S-VLAN. Dar a cada SLICE (no a todo el clúster) su propia
+            # S-VLAN sobre este mismo puerto compartido exigiría reglas
+            # OpenFlow por C-VLAN que decidieran cuál S-VLAN empujar -- se
+            # dejó fuera a propósito: no hay forma de validarlas sin acceso
+            # real al clúster antes del freeze del 5-dic, y una regla mal
+            # escrita ahí corta la conectividad del uplink completo.
+            cmds.append(f"sudo ovs-vsctl set port {uplink} vlan_mode=dot1q-tunnel "
+                        f"tag={cfg.qinq_svlan} trunks={trunks} "
+                        f"other_config:qinq-ethtype={cfg.qinq_ethertype}")
+        else:
+            # IMPORTANTE (encontrado en vivo el 26-nov probando contra el
+            # clúster real): NUNCA usar vlan_mode=trunk a secas aquí. Este
+            # mismo puerto (uplink) suele llevar también el tráfico de
+            # gestión (SSH) hacia el propio servidor, que viaja SIN etiqueta
+            # VLAN. "trunk" a secas descarta todo lo no etiquetado, así que
+            # el comando se corta la conexión que lo está aplicando (si se
+            # ejecuta por SSH, la sesión se queda "colgada" -- no es que el
+            # comando falle, es que ya no hay forma de ver su respuesta).
+            # "native-untagged" dice: deja pasar lo no etiquetado como
+            # siempre (gestión) Y ADEMÁS lo etiquetado de `trunks` (los
+            # enlaces entre VMs) -- así no nos cortamos el acceso remoto.
+            cmds.append(f"sudo ovs-vsctl set port {uplink} vlan_mode=native-untagged "
+                        f"tag=0 trunks={trunks}")
     if cfg.storm_control:
         cookie = f"0x{cfg.cookie:x}"
         # Se borra solo lo nuestro (por cookie) y se vuelve a crear: idempotente.
@@ -169,11 +217,54 @@ def comandos_host(host: str, plan: PlanBroadcast, cfg: ConfigBroadcast) -> list[
     return cmds
 
 
+def comandos_revertir_host(host: str, cfg: ConfigBroadcast) -> list[str]:
+    """Deshace SOLO el cambio riesgoso (el modo del puerto uplink), dejándolo
+    sin restricción de VLAN -- es lo que corre la red de seguridad (ver
+    driver_linux._ejecutar_con_auto_reversion) si el comando real no llega a
+    confirmarse a tiempo. No toca storm control (flows/meters): esos no
+    pueden cortar la conexión de gestión, así que no necesitan red de
+    seguridad."""
+    uplink = cfg.uplink_por_host.get(host)
+    if not uplink:
+        return []
+    return [f"sudo ovs-vsctl clear port {uplink} vlan_mode",
+            f"sudo ovs-vsctl clear port {uplink} tag",
+            f"sudo ovs-vsctl clear port {uplink} trunks"]
+
+
+def comandos_revertir_switch(cfg: ConfigBroadcast) -> dict[str, list[str]]:
+    """Igual que ``comandos_revertir_host`` pero para cada puerto de ovs1,
+    uno por host (la reversión se corre en la sesión SSH hacia ovs1, por
+    host, igual que ``comandos_switch`` arma el cambio por host)."""
+    if cfg.switch is None:
+        return {}
+    return {host: [f"sudo ovs-vsctl clear port {puerto} vlan_mode",
+                   f"sudo ovs-vsctl clear port {puerto} tag",
+                   f"sudo ovs-vsctl clear port {puerto} trunks"]
+            for host, puerto in cfg.switch.puerto_por_host.items()}
+
+
 def comandos_switch(plan: PlanBroadcast, cfg: ConfigBroadcast) -> list[str]:
     """Poda de VLANs en ovs1: cada puerto hacia un servidor lleva solo las
-    VLANs que ese servidor comparte con otro (las únicas que cruzan ovs1)."""
+    VLANs que ese servidor comparte con otro (las únicas que cruzan ovs1).
+
+    Con Q-in-Q habilitado, el puerto de ovs1 hacia cada servidor debe hablar
+    el mismo modo "dot1q-tunnel" que su contraparte en comandos_host(), o el
+    switch no entendería la doble etiqueta que llega -- ambos lados de un
+    mismo enlace físico deben configurarse igual."""
     if cfg.switch is None:
         return []
-    return [f"sudo ovs-vsctl set port {puerto} vlan_mode=trunk "
-            f"trunks={_trunks(plan.vlans_que_salen(host), cfg.vlan_sin_uso)}"
-            for host, puerto in sorted(cfg.switch.puerto_por_host.items())]
+    cmds = []
+    for host, puerto in sorted(cfg.switch.puerto_por_host.items()):
+        trunks = _trunks(plan.vlans_que_salen(host), cfg.vlan_sin_uso)
+        if cfg.qinq and cfg.qinq_svlan is not None:
+            cmds.append(f"sudo ovs-vsctl set port {puerto} vlan_mode=dot1q-tunnel "
+                        f"tag={cfg.qinq_svlan} trunks={trunks} "
+                        f"other_config:qinq-ethtype={cfg.qinq_ethertype}")
+        else:
+            # Mismo motivo que en comandos_host(): "trunk" a secas cortaría
+            # el acceso de gestión a ovs1 si viaja sin etiqueta por este
+            # mismo puerto.
+            cmds.append(f"sudo ovs-vsctl set port {puerto} vlan_mode=native-untagged "
+                        f"tag=0 trunks={trunks}")
+    return cmds

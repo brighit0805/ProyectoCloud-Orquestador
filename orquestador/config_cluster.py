@@ -84,8 +84,41 @@ VLAN_INICIO, VLAN_FIN = 3000, 3099
 #    que el bridge exista; si falla, solo queda un warning en el log.
 # Los comandos usan 'sudo ovs-vsctl' y 'sudo ovs-ofctl': requieren NOPASSWD para esos
 # binarios, igual que iptables para el SSH entrante.
-SWITCH_OVS = None
-CONTROL_BROADCAST = {"limite_pps": 200, "rafaga": 100, "vlan_sin_uso": 4094, "storm_control": True}
+#
+# Mapeo server -> puerto de ovs1, confirmado el 26-nov cruzando el diagrama de
+# topología oficial (VNRT, panel "doble click" de cada nodo) con las MACs
+# reales del clúster:
+#   - Cada server tiene DOS interfaces: 'ens4' (uplink de gestión, va a MPLink1,
+#     es la que ya podamos en WORKERS/uplink de arriba) y 'ens3' (va directo a
+#     ovs1, HOY sin agregar a ningún bridge del propio server -- no lleva
+#     tráfico real de las VMs todavía).
+#   - server1.ens3 (MAC fa:16:3e:f3:3d:13) <-> ovs1.ens4 (Enlace 2 del VNRT)
+#   - server2.ens3 (MAC fa:16:3e:75:a3:97) <-> ovs1.ens5 (Enlace 3 del VNRT)
+#   - server3.ens3 (MAC fa:16:3e:8f:37:7e) <-> ovs1.ens6 (Enlace 4 del VNRT)
+# ovs1 tiene su propia IP de gestión en un puerto interno separado (tipo
+# "internal", no ens4/ens5/ens6), así que podar VLANs en estos tres puertos no
+# le corta el acceso SSH a ovs1 mismo (confirmado en vivo).
+# OJO: como ens3 no está en ningún bridge del lado server todavía, esta regla
+# no tiene efecto visible en el tráfico actual de las VMs (que hoy viaja por
+# MPLink1 vía ens4/br-int) -- cumple el pedido de Germán de "aplicar reglas en
+# OVS1", pero si el diseño final requiere que las VLANs de los enlaces crucen
+# por ovs1 de verdad, falta un paso aparte: agregar ens3 al bridge de cada
+# server (fuera del alcance de este cambio).
+SWITCH_OVS = {
+    "destino_ssh": "ubuntu@192.168.201.5",
+    "puerto_por_host": {"server1": "ens4", "server2": "ens5", "server3": "ens6"},
+}
+# Q-in-Q / 802.1ad (R5, pedido por Germán 25-nov-2026 tras su objeción al límite
+# de 4094 VLAN de 802.1Q): envuelve TODO el tráfico que cruza el uplink de cada
+# server (y el puerto equivalente en ovs1, si SWITCH_OVS está configurado) en
+# una segunda VLAN exterior fija ("S-VLAN", aquí 100) -- las VLAN de cada
+# enlace (C-VLAN, VLAN_INICIO/VLAN_FIN arriba) siguen siendo una por enlace,
+# sin cambios, y las VMs no ven ni usan esta segunda etiqueta para nada (ver
+# driver_linux._interfaz_xml -- su puerto OVS sigue siendo access, intacto).
+# "qinq": False (como hoy) = comportamiento IDÉNTICO al de siempre, un solo
+# tag por enlace, sin tocar el modo del puerto del uplink.
+CONTROL_BROADCAST = {"limite_pps": 200, "rafaga": 100, "vlan_sin_uso": 4094, "storm_control": True,
+                     "qinq": False, "qinq_svlan": 100, "qinq_ethertype": "0x8100"}
 
 
 def uri(worker: str) -> str:
