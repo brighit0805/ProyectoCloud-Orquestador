@@ -450,3 +450,18 @@ g.nodo-grupo:focus-visible .nodo-chip { stroke: var(--acento); stroke-width: 2.5
   .leyenda { max-width: calc(100% - 1.4rem); }
 }
 .sin-owner .col-owner { display: none; }
+body:not(.es-admin) .solo-admin { display: none !important; }
+.tu-rol { margin: 0 0 .8rem; }
+.tabla-permisos td:not(:first-child), .tabla-permisos th.col-rol { text-align: center; width: 150px; }
+.tabla-permisos td:first-child { font-family: var(--sans); }
+.tabla-permisos .mio { background: var(--marca-tenue) !important; }
+.tabla-permisos th.mio { color: var(--marca-fuerte); }
+.si { color: var(--ok); font-weight: 700; }
+.no { color: #b3bcc4; }
+.fila-formulario { display: grid; grid-template-columns: 1fr 1fr 160px auto; gap: .8rem; align-items: end; }
+.fila-formulario label { margin: 0; }
+.fila-formulario input, .fila-formulario select { margin-top: .3rem; }
+.con-margen { margin: .8rem 0 0; }
+button.peligro:hover { border-color: var(--error); color: var(--error); }
+.resultado { background: #0f1a24; color: #d9f3e5; padding: .8rem; border-radius: var(--radio-chico); font-size: .78rem; overflow-x: auto; margin: .8rem 0 0; white-space: pre-wrap; }
+@media (max-width: 900px) { .fila-formulario { grid-template-columns: 1fr; } }

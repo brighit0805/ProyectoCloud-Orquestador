@@ -219,6 +219,55 @@ class TestApiHttp(unittest.TestCase):
                               cuerpo={"actual": "x", "nueva": "yyyyyyyy"})
         self.assertEqual(status, 401)
 
+    # -- administración de usuarios y permisos (GUI) --------------------------
+    def test_permisos_por_rol(self):
+        token_ana, _ = self._token("ana", "clave-usuario-1")
+        status, cuerpo = _peticion("GET", f"{self.base}/permisos", token=token_ana)
+        self.assertEqual(status, 200)
+        self.assertEqual(cuerpo["rol"], "usuario")
+        solo_admin = [p for p in cuerpo["permisos"] if p["admin"] and not p["usuario"]]
+        self.assertTrue(solo_admin)
+
+    def test_usuario_normal_no_administra_usuarios(self):
+        token_ana, _ = self._token("ana", "clave-usuario-1")
+        self.assertEqual(_peticion("GET", f"{self.base}/usuarios", token=token_ana)[0], 403)
+        self.assertEqual(_peticion("POST", f"{self.base}/usuarios", token=token_ana,
+                                   cuerpo={"usuario": "x", "contrasena": "12345678"})[0], 403)
+        self.assertEqual(_peticion("DELETE", f"{self.base}/usuarios/brighit", token=token_ana)[0], 403)
+
+    def test_admin_crea_lista_y_elimina_usuarios(self):
+        token, _ = self._token("brighit", "clave-admin-1")
+        status, cuerpo = _peticion("POST", f"{self.base}/usuarios", token=token,
+                                   cuerpo={"usuario": "luis", "contrasena": "clave-luis-1", "rol": "usuario"})
+        self.assertEqual(status, 201, cuerpo)
+        self._token("luis", "clave-luis-1")                       # ya puede entrar
+        status, filas = _peticion("GET", f"{self.base}/usuarios", token=token)
+        self.assertEqual(status, 200)
+        self.assertEqual({f["usuario"] for f in filas}, {"ana", "brighit", "luis"})
+        status, _ = _peticion("DELETE", f"{self.base}/usuarios/luis", token=token)
+        self.assertEqual(status, 200)
+        status, _ = _peticion("POST", f"{self.base}/login",
+                              cuerpo={"usuario": "luis", "contrasena": "clave-luis-1"})
+        self.assertEqual(status, 401)
+
+    def test_admin_no_crea_usuarios_invalidos_ni_repetidos(self):
+        token, _ = self._token("brighit", "clave-admin-1")
+        for cuerpo in ({"usuario": "ana", "contrasena": "12345678"},           # ya existe
+                       {"usuario": "con espacio", "contrasena": "12345678"},
+                       {"usuario": "pepe", "contrasena": "corta"},
+                       {"usuario": "pepe", "contrasena": "12345678", "rol": "root"}):
+            status, resp = _peticion("POST", f"{self.base}/usuarios", token=token, cuerpo=cuerpo)
+            self.assertEqual(status, 400, (cuerpo, resp))
+        self._token("ana", "clave-usuario-1")                      # ana no cambió
+
+    def test_admin_no_se_elimina_a_si_mismo_ni_a_quien_tiene_slices(self):
+        token, _ = self._token("brighit", "clave-admin-1")
+        self.assertEqual(_peticion("DELETE", f"{self.base}/usuarios/brighit", token=token)[0], 400)
+        token_ana, _ = self._token("ana", "clave-usuario-1")
+        _peticion("POST", f"{self.base}/slices", token=token_ana, cuerpo=self._spec_lineal("de-ana"))
+        self.assertEqual(_peticion("DELETE", f"{self.base}/usuarios/ana", token=token)[0], 400)
+        self.assertEqual(_peticion("DELETE", f"{self.base}/usuarios/nadie", token=token)[0], 404)
+
     # -- consola de una VM (GUI) --------------------------------------------
     def test_consola_de_un_nodo_propio(self):
         token_ana, _ = self._token("ana", "clave-usuario-1")

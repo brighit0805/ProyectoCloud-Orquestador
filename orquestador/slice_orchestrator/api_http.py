@@ -42,9 +42,10 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .control_acceso import (
+    PERMISOS_POR_ROL,
     CredencialesInvalidas,
     ErrorAcceso,
     GestorUsuarios,
@@ -87,9 +88,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(cuerpo)
 
+    def _cuerpo_crudo(self) -> bytes:
+        # Se lee una sola vez y se guarda: también lo usa _responder_error.
+        if not hasattr(self, "_cuerpo"):
+            largo = int(self.headers.get("Content-Length", 0) or 0)
+            self._cuerpo = self.rfile.read(largo) if largo else b""
+        return self._cuerpo
+
     def _leer_json(self) -> dict:
-        largo = int(self.headers.get("Content-Length", 0) or 0)
-        crudo = self.rfile.read(largo) if largo else b"{}"
+        crudo = self._cuerpo_crudo() or b"{}"
         try:
             return json.loads(crudo or b"{}")
         except json.JSONDecodeError:
@@ -102,6 +109,14 @@ class Handler(BaseHTTPRequestHandler):
         return verificar_token(auth[len("Bearer "):].strip())
 
     def _responder_error(self, exc: Exception) -> None:
+        # Si la petición se rechaza antes de leer su cuerpo (p. ej. sin token),
+        # hay que consumirlo igual: si no, el servidor cierra la conexión con
+        # datos sin leer y en Windows el cliente recibe ConnectionAbortedError
+        # en vez del 401/403.
+        try:
+            self._cuerpo_crudo()
+        except (OSError, ValueError):
+            pass
         if isinstance(exc, PermisoInsuficiente):
             status = 403
         elif isinstance(exc, (CredencialesInvalidas, ErrorAcceso)):
@@ -142,6 +157,18 @@ class Handler(BaseHTTPRequestHandler):
                 resultado = _svc.crear_slice(sesion["usuario"], cuerpo, desplegar=desplegar,
                                               estrategia=estrategia)
                 self._enviar_json(201, resultado)
+            elif ruta == "/usuarios":
+                sesion = self._sesion()
+                exigir_rol(sesion, "admin")
+                cuerpo = self._leer_json()
+                usuario = str(cuerpo.get("usuario", "")).strip()
+                try:
+                    _gestor.crear(usuario, str(cuerpo.get("contrasena", "")),
+                                  str(cuerpo.get("rol", "usuario")))
+                except ErrorAcceso as exc:
+                    raise ErrorServicio(str(exc)) from None
+                logger.info("[%s] creó el usuario %s", sesion["usuario"], usuario)
+                self._enviar_json(201, {"usuario": usuario, "rol": cuerpo.get("rol", "usuario")})
             elif ruta == "/cuenta/contrasena":
                 sesion = self._sesion()
                 cuerpo = self._leer_json()
@@ -206,6 +233,19 @@ class Handler(BaseHTTPRequestHandler):
                 sesion = self._sesion()
                 self._enviar_json(200, _svc.ver_trabajo(sesion["usuario"], ruta[len("/trabajos/"):],
                                                         admin=sesion["rol"] == "admin"))
+            elif ruta == "/usuarios":
+                sesion = self._sesion()
+                exigir_rol(sesion, "admin")
+                slices = _svc.listar_todos_slices()
+                filas = []
+                for u in sorted(_gestor.listar(), key=lambda x: x["usuario"]):
+                    propios = [s for s in slices if s["owner"] == u["usuario"]]
+                    filas.append({**u, "slices": len(propios),
+                                  "activos": sum(1 for s in propios if s["estado"] == "activo")})
+                self._enviar_json(200, filas)
+            elif ruta == "/permisos":
+                sesion = self._sesion()
+                self._enviar_json(200, {"rol": sesion["rol"], "permisos": PERMISOS_POR_ROL})
             elif ruta == "/red/broadcast":
                 self._sesion()
                 self._enviar_json(200, _svc.estado_broadcast())
@@ -252,7 +292,21 @@ class Handler(BaseHTTPRequestHandler):
         partes = urlparse(self.path)
         ruta, qs = partes.path, parse_qs(partes.query)
         try:
-            if ruta.startswith("/slices/"):
+            if ruta.startswith("/usuarios/"):
+                sesion = self._sesion()
+                exigir_rol(sesion, "admin")
+                usuario = unquote(ruta[len("/usuarios/"):])
+                if usuario == sesion["usuario"]:
+                    raise ErrorServicio("No puedes eliminar tu propio usuario")
+                if any(s["owner"] == usuario for s in _svc.listar_todos_slices()):
+                    raise ErrorServicio(f"'{usuario}' todavía tiene slices: elimínalos primero")
+                try:
+                    _gestor.eliminar(usuario)
+                except ErrorAcceso as exc:
+                    raise NoEncontrado(str(exc)) from None
+                logger.info("[%s] eliminó el usuario %s", sesion["usuario"], usuario)
+                self._enviar_json(200, {"eliminado": usuario})
+            elif ruta.startswith("/slices/"):
                 sesion = self._sesion()
                 slice_id = ruta[len("/slices/"):]
                 if qs.get("asincrono", ["0"])[0] == "1":

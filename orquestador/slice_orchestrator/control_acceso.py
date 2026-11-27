@@ -26,6 +26,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,24 @@ from typing import Any
 ITERACIONES_PBKDF2 = 200_000
 ROLES_VALIDOS = ("admin", "usuario")
 LARGO_MINIMO_PASSWORD = 8
+_RE_NOMBRE_USUARIO = re.compile(r"^[A-Za-z0-9._@+-]{1,64}$")
+
+# Qué puede hacer cada rol (lo muestra la GUI). Es solo descriptivo: quien
+# lo hace cumplir es la API (exigir_rol y los chequeos de propietario del
+# servicio de slices), así que si se cambia algo aquí hay que cambiarlo allá.
+PERMISOS_POR_ROL: list[dict[str, Any]] = [
+    {"tarea": "Diseñar y crear slices (topologías, flavors, Internet, plantillas)", "usuario": True, "admin": True},
+    {"tarea": "Desplegar, editar y eliminar sus propios slices", "usuario": True, "admin": True},
+    {"tarea": "Ver la topología de sus slices y abrir la consola de sus VMs", "usuario": True, "admin": True},
+    {"tarea": "Ver sus trabajos en la cola", "usuario": True, "admin": True},
+    {"tarea": "Ver el uso de los servidores y su propio consumo", "usuario": True, "admin": True},
+    {"tarea": "Ver el control de broadcast por servidor", "usuario": True, "admin": True},
+    {"tarea": "Cambiar su contraseña", "usuario": True, "admin": True},
+    {"tarea": "Ver y eliminar los slices de todos los usuarios", "usuario": False, "admin": True},
+    {"tarea": "Ver la cola de trabajos de todos los usuarios", "usuario": False, "admin": True},
+    {"tarea": "Crear y eliminar usuarios, y asignar su rol", "usuario": False, "admin": True},
+    {"tarea": "Limpiar recursos huérfanos del clúster (OpenStack)", "usuario": False, "admin": True},
+]
 TTL_TOKEN_SEG_DEFAULT = 3600
 
 
@@ -173,6 +192,18 @@ class GestorUsuarios:
         if not entrada or not ok:
             raise CredencialesInvalidas("Usuario o contraseña incorrectos")
         return entrada["rol"]
+
+    def crear(self, usuario: str, password: str, rol: str) -> None:
+        """Alta de un usuario NUEVO desde la API (admin). A diferencia de
+        ``agregar`` (CLI), valida el nombre, no reemplaza a uno existente y
+        exige el largo mínimo de contraseña."""
+        if not _RE_NOMBRE_USUARIO.match(usuario or ""):
+            raise ErrorAcceso("Nombre de usuario inválido (letras, números y . _ @ + -, hasta 64)")
+        if self.existe(usuario):
+            raise ErrorAcceso(f"El usuario '{usuario}' ya existe")
+        if len(password or "") < LARGO_MINIMO_PASSWORD:
+            raise ErrorAcceso(f"La contraseña debe tener al menos {LARGO_MINIMO_PASSWORD} caracteres")
+        self.agregar(usuario, password, rol)
 
     def cambiar_password(self, usuario: str, actual: str, nueva: str) -> None:
         """El propio usuario cambia su contraseña (GUI). Exige la actual y una

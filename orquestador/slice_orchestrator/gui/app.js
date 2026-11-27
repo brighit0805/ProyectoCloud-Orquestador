@@ -84,7 +84,20 @@ document.addEventListener("DOMContentLoaded", () => {
     else if (b.dataset.pan) moverVista(id, b.dataset.pan);
   }));
   configurarArrastreYRueda("det-lienzo");
-  document.getElementById("toggle-todos").addEventListener("change", e => { estado.verTodos = e.target.checked; cargarSlices(); cargarTrabajos(); });
+  document.getElementById("toggle-todos-trabajos").addEventListener("change", e => {
+    estado.verTodos = e.target.checked;
+    document.getElementById("toggle-todos").checked = e.target.checked;
+    cargarSlices(); cargarTrabajos();
+  });
+  document.getElementById("form-usuario").addEventListener("submit", onCrearUsuario);
+  document.getElementById("btn-refrescar-usuarios").addEventListener("click", cargarUsuarios);
+  document.getElementById("btn-revisar-residuos").addEventListener("click", () => revisarResiduos(false));
+  document.getElementById("btn-limpiar-residuos").addEventListener("click", () => revisarResiduos(true));
+  document.getElementById("toggle-todos").addEventListener("change", e => {
+    estado.verTodos = e.target.checked;
+    document.getElementById("toggle-todos-trabajos").checked = e.target.checked;
+    cargarSlices(); cargarTrabajos();
+  });
 
   document.getElementById("d-tipo").addEventListener("change", () => onCambioTopologiaBase("tipo"));
   document.getElementById("d-nodos").addEventListener("change", () => onCambioTopologiaBase("nodos"));
@@ -158,6 +171,7 @@ async function mostrarApp() {
   const inicial = (estado.usuario || "?").trim().charAt(0);
   for (const id of ["avatar-barra", "avatar-menu", "avatar-lateral"]) document.getElementById(id).textContent = inicial;
   document.getElementById("toggle-todos-wrap").classList.toggle("oculto", estado.rol !== "admin");
+  document.body.classList.toggle("es-admin", estado.rol === "admin");
 
   try {
     const [catalogo, zonas] = await Promise.all([api("GET", "/catalogo"), api("GET", "/zonas")]);
@@ -199,6 +213,8 @@ const TITULOS = {
   trabajos: ["Trabajos", "Cola de despliegues y eliminaciones (multiusuario)"],
   recursos: ["Recursos", "Consumo de los servidores del clúster y de tus slices"],
   red: ["Red", "Control de broadcast por servidor (R5)"],
+  permisos: ["Roles y permisos", "Qué puede hacer un usuario y qué puede hacer un administrador"],
+  usuarios: ["Usuarios", "Administración de cuentas y mantenimiento del clúster (solo administrador)"],
 };
 
 function activarTab(nombre) {
@@ -216,6 +232,8 @@ function activarTab(nombre) {
   if (nombre === "trabajos") cargarTrabajos();
   if (nombre === "recursos") cargarRecursos();
   if (nombre === "red") cargarBroadcast();
+  if (nombre === "permisos") cargarPermisos();
+  if (nombre === "usuarios") cargarUsuarios();
 }
 
 function activarModo(modo) {
@@ -1195,5 +1213,91 @@ async function cargarBroadcast() {
       <td>${esc(lista(f.vlans_solo_locales))}</td><td>${esc(f.puertos_con_storm_control)}</td></tr>`).join("");
   } catch (e) {
     if (/401|token/i.test(e.message)) onSalir();
+  }
+}
+
+// ------------------------------------------------------------------
+// Roles y permisos (todos) y administración de usuarios (solo admin)
+// ------------------------------------------------------------------
+async function cargarPermisos() {
+  try {
+    const r = await api("GET", "/permisos");
+    document.getElementById("permisos-rol").textContent = r.rol;
+    document.querySelectorAll("#tabla-permisos th.col-rol").forEach(th => th.classList.toggle("mio", th.dataset.rol === r.rol));
+    const marca = si => si ? '<span class="si" aria-label="sí">✓</span>' : '<span class="no" aria-label="no">—</span>';
+    document.querySelector("#tabla-permisos tbody").innerHTML = r.permisos.map(p => `<tr>
+      <td>${esc(p.tarea)}</td>
+      <td class="${r.rol === "usuario" ? "mio" : ""}">${marca(p.usuario)}</td>
+      <td class="${r.rol === "admin" ? "mio" : ""}">${marca(p.admin)}</td></tr>`).join("");
+  } catch (e) {
+    if (/401|token/i.test(e.message)) onSalir();
+  }
+}
+
+async function cargarUsuarios() {
+  if (estado.rol !== "admin") return;
+  try {
+    const filas = await api("GET", "/usuarios");
+    const tbody = document.querySelector("#tabla-usuarios tbody");
+    tbody.innerHTML = "";
+    for (const u of filas) {
+      const tr = document.createElement("tr");
+      const yo = u.usuario === estado.usuario;
+      tr.innerHTML = `<td>${esc(u.usuario)}${yo ? ' <span class="dueno">(tú)</span>' : ""}</td>
+        <td><span class="chip-rol">${esc(u.rol)}</span></td><td>${esc(u.slices)}</td><td>${esc(u.activos)}</td>
+        <td class="acciones"></td>`;
+      if (!yo) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "btn-accion peligro"; b.title = "Eliminar usuario";
+        b.setAttribute("aria-label", `Eliminar usuario ${u.usuario}`);
+        b.innerHTML = ICONO("basura");
+        b.addEventListener("click", () => eliminarUsuario(u.usuario));
+        tr.querySelector(".acciones").appendChild(b);
+      }
+      tbody.appendChild(tr);
+    }
+  } catch (e) {
+    if (/401|token/i.test(e.message)) onSalir();
+  }
+}
+
+async function onCrearUsuario(ev) {
+  ev.preventDefault();
+  const msg = document.getElementById("nu-mensaje");
+  const usuario = document.getElementById("nu-usuario").value.trim();
+  const contrasena = document.getElementById("nu-clave").value;
+  const rol = document.getElementById("nu-rol").value;
+  try {
+    await api("POST", "/usuarios", { usuario, contrasena, rol });
+    msg.textContent = `Usuario "${usuario}" creado con rol ${rol}.`;
+    msg.className = "mensaje ok";
+    document.getElementById("nu-usuario").value = ""; document.getElementById("nu-clave").value = "";
+    cargarUsuarios();
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = "mensaje error";
+  }
+}
+
+async function eliminarUsuario(usuario) {
+  if (!confirm(`¿Eliminar al usuario "${usuario}"? Ya no podrá iniciar sesión.`)) return;
+  try {
+    await api("DELETE", "/usuarios/" + encodeURIComponent(usuario));
+    cargarUsuarios();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function revisarResiduos(confirmar) {
+  if (confirmar && !confirm("¿Borrar los recursos huérfanos del clúster? No se puede deshacer.")) return;
+  const caja = document.getElementById("residuos-resultado");
+  caja.classList.remove("oculto");
+  caja.textContent = confirmar ? "Limpiando…" : "Revisando…";
+  try {
+    const r = await api("POST", "/mantenimiento/limpiar-residuos", { confirmar });
+    caja.textContent = JSON.stringify(r, null, 2);
+  } catch (e) {
+    caja.textContent = e.message;
   }
 }
