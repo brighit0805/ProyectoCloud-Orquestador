@@ -60,11 +60,15 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.uplink_por_host["server3"], "ens4")
         self.assertNotIn("server3", cfg.gestion_por_host)
 
-    def test_config_cluster_real_viene_apagado(self):
+    def test_config_cluster_real_encendido(self):
+        # OJO (27-nov): UPLINK_DATOS_SEPARADO se activo en vivo tras probar
+        # QinQ contra el cluster real (ver commit de ese dia) -- ya no
+        # viene apagado por defecto.
         import config_cluster
-        self.assertFalse(config_cluster.UPLINK_DATOS_SEPARADO)
+        self.assertTrue(config_cluster.UPLINK_DATOS_SEPARADO)
         self.assertEqual({d.get("uplink_datos") for d in config_cluster.WORKERS.values()}, {"ens3"})
-        self.assertEqual(cb.ConfigBroadcast.desde_modulo(config_cluster).gestion_por_host, {})
+        self.assertEqual(cb.ConfigBroadcast.desde_modulo(config_cluster).gestion_por_host,
+                         {h: "ens4" for h in config_cluster.WORKERS})
 
 
 class TestSinQinQ(unittest.TestCase):

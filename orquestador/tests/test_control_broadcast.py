@@ -199,10 +199,18 @@ class TestConfigDesdeModulo(unittest.TestCase):
 
     def test_config_cluster_real_poda_uplinks_y_ovs1(self):
         """Uplinks de los servers confirmados (ens4, 24-nov) y puertos de ovs1
-        hacia cada server (ens4/ens5/ens6, 26-nov)."""
+        hacia cada server (ens4/ens5/ens6, 26-nov).
+
+        OJO (27-nov): desde que se activó UPLINK_DATOS_SEPARADO=True en vivo,
+        el uplink de datos (lo que poda este chequeo) es ens3, y ens4 queda
+        solo con la gestion (ver gestion_por_host). Antes, con el esquema
+        apagado, ambos coincidian en ens4 -- ya no es el caso.
+        """
         import config_cluster
         cfg = cb.ConfigBroadcast.desde_modulo(config_cluster)
         self.assertEqual(cfg.uplink_por_host,
+                         {h: "ens3" for h in config_cluster.WORKERS})
+        self.assertEqual(cfg.gestion_por_host,
                          {h: "ens4" for h in config_cluster.WORKERS})
         self.assertEqual(cfg.switch.puerto_por_host,
                          {"server1": "ens4", "server2": "ens5", "server3": "ens6"})

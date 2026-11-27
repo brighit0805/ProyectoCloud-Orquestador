@@ -1066,7 +1066,18 @@ class ServicioSlices:
             except ValueError as exc:
                 raise ErrorServicio(str(exc)) from None
             self._purgar_tokens()
+            # Hallazgo 27-nov-2026: secrets.token_urlsafe() usa el alfabeto
+            # base64url (incluye '-'), asi que a veces el token empieza con
+            # '-'. Pasado como argumento posicional en "orq consola canjear
+            # <token>", argparse lo confunde con una bandera y falla con
+            # "the following arguments are required: token" -- le paso a
+            # cualquier usuario real, no solo a los tests. Se regenera hasta
+            # que no empiece con '-' (probabilidad ~1/64 cada vez, converge
+            # casi siempre al primer intento); no cambia la entropia real
+            # del token, solo descarta el caso que rompe la CLI.
             token = secrets.token_urlsafe(32)
+            while token.startswith("-"):
+                token = secrets.token_urlsafe(32)
             posicion = slc.nodos.index(n)
             self._tokens[self._hash_token(token)] = {
                 "usuario": usuario, "slice_id": slice_id, "nodo": composicion.clave_de(n),

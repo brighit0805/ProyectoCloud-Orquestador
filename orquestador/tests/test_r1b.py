@@ -600,6 +600,23 @@ class TestConsola(unittest.TestCase):
         a = self.svc.emitir_token_consola("ana", self.d["id"], "vm1")["token"]
         b = self.svc.emitir_token_consola("ana", self.d["id"], "vm1")["token"]
         self.assertNotEqual(a, b)
+
+    def test_el_token_nunca_empieza_con_guion(self):
+        """Hallazgo 27-nov-2026: secrets.token_urlsafe() puede devolver un
+        token que empieza con '-' (alfabeto base64url). Pasado como argumento
+        posicional en 'orq consola canjear <token>', argparse lo confunde con
+        una bandera y la CLI falla con 'the following arguments are
+        required: token' -- le pasó de verdad a un token real en el headnode.
+        Se fuerza aquí el caso raro (mockeando el primer intento) para
+        confirmar que el servicio reintenta en vez de devolver ese token."""
+        with patch("slice_orchestrator.servicio_slices.secrets.token_urlsafe",
+                   side_effect=["-malo", "bueno123"]):
+            t = self.svc.emitir_token_consola("ana", self.d["id"], "vm1")["token"]
+        self.assertEqual(t, "bueno123")
+        self.assertFalse(t.startswith("-"))
+
+    def test_token_invalido_no_canjea(self):
+        a = self.svc.emitir_token_consola("ana", self.d["id"], "vm1")["token"]
         for falso in ("", "x", a[:-1], a + "x", None):
             with self.assertRaises(ErrorServicio):
                 self.svc.canjear_token_consola(falso)

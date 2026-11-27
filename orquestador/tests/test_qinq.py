@@ -263,11 +263,12 @@ class TestConfigQinQ(unittest.TestCase):
 
     def test_config_cluster_real(self):
         import config_cluster
-        # Viene apagado hasta probarlo en el clúster, pero ya configurado.
-        self.assertIsNone(cb.ConfigBroadcast.desde_modulo(config_cluster).qinq)
+        # OJO (27-nov): QINQ["activo"] se activo en vivo tras probar el
+        # aislamiento por slice contra el cluster real (ver commit de ese
+        # dia) -- ya no viene apagado por defecto.
         self.assertEqual(config_cluster.QINQ["ethertype"], "802.1ad")
-        q = cb.ConfigBroadcast.desde_modulo(types.SimpleNamespace(
-            WORKERS=config_cluster.WORKERS, QINQ={**config_cluster.QINQ, "activo": True})).qinq
+        q = cb.ConfigBroadcast.desde_modulo(config_cluster).qinq
+        self.assertIsNotNone(q)
         self.assertEqual((q.bridge, q.ethertype, q.mtu_vm), ("br-qinq", "802.1ad", 1496))
 
 
