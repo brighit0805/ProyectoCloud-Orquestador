@@ -136,9 +136,9 @@ CONTROL_BROADCAST = {"limite_pps": 200, "rafaga": 100, "vlan_sin_uso": 4094, "st
 # Así lo pide el enunciado (tráfico de VMs por OVS) y un error en las VLANs no corta el SSH.
 # Activar después de confirmar el enlace ens3 <-> ovs1 con una prueba manual (ver nota abajo).
 # Con QinQ activo además, ens3 va a br-qinq y ens4 ya no se mueve de br-int.
-UPLINK_DATOS_SEPARADO = False
+UPLINK_DATOS_SEPARADO = True
 
-QINQ = {"activo": False, "bridge": "br-qinq", "ethertype": "802.1ad", "mtu_vm": 1496}
+QINQ = {"activo": True, "bridge": "br-qinq", "ethertype": "802.1ad", "mtu_vm": 1496}
 
 def uri(worker: str) -> str:
     return f"qemu+ssh://{USUARIO_SSH}@{WORKERS[worker]['ip']}/system"
