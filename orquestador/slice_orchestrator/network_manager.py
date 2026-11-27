@@ -34,7 +34,13 @@ class VLANAllocator:
 
     inicio: int = 3000
     fin: int = 3999
+    # QinQ: una S-VLAN (etiqueta externa, 802.1ad) por slice. Es otro espacio
+    # de etiquetas que las VLAN de enlace (C-VLAN), pero se toma de un rango
+    # aparte para que en logs y en ovs1 no se confunda una con otra.
+    inicio_servicio: int = 2000
+    fin_servicio: int = 2999
     _reservas: dict[str, list[int]] = field(default_factory=dict)
+    _servicio: dict[str, int] = field(default_factory=dict)
 
     def reservar(self, slice_id: str, cantidad: int) -> list[int]:
         if slice_id in self._reservas:
@@ -52,6 +58,18 @@ class VLANAllocator:
 
     def liberar(self, slice_id: str) -> None:
         self._reservas.pop(slice_id, None)
+        self._servicio.pop(slice_id, None)
+
+    def reservar_servicio(self, slice_id: str) -> int:
+        """S-VLAN del slice (QinQ). Idempotente: un slice tiene una sola."""
+        if slice_id in self._servicio:
+            return self._servicio[slice_id]
+        ocupadas = set(self._servicio.values())
+        for vlan in range(self.inicio_servicio, self.fin_servicio + 1):
+            if vlan not in ocupadas:
+                self._servicio[slice_id] = vlan
+                return vlan
+        raise RuntimeError("No quedan S-VLAN (QinQ) libres en el rango configurado")
 
     def reservar_una(self, slice_id: str) -> int:
         """Reserva UNA VLAN adicional para un slice que ya tiene algunas (o
@@ -75,13 +93,20 @@ class VLANAllocator:
         if slice_id in self._reservas:
             self._reservas[slice_id] = [v for v in self._reservas[slice_id] if v != vlan_id]
 
-    def restaurar(self, slice_id: str, vlans: list[int]) -> None:
+    def restaurar(self, slice_id: str, vlans: list[int],
+                  vlan_servicio: int | None = None) -> None:
         """Marca como ocupadas las VLAN de un slice ya desplegado (al reconstruir
-        el estado desde el almacenamiento persistente)."""
+        el estado desde el almacenamiento persistente), incluida su S-VLAN."""
         ocupadas = {v for k, valores in self._reservas.items() if k != slice_id for v in valores}
         repetidas = ocupadas.intersection(vlans)
         if repetidas:
             raise RuntimeError(f"VLAN ya reservadas por otro slice: {sorted(repetidas)}")
+        if vlan_servicio is not None:
+            dueno = next((k for k, v in self._servicio.items()
+                          if v == vlan_servicio and k != slice_id), None)
+            if dueno is not None:
+                raise RuntimeError(f"S-VLAN {vlan_servicio} ya reservada por el slice {dueno}")
+            self._servicio[slice_id] = vlan_servicio
         self._reservas[slice_id] = list(vlans)
 
 
@@ -94,6 +119,8 @@ def asignar_redes(slc: Slice, allocator: VLANAllocator) -> dict[str, str]:
     interfaz correcta (Driver Linux).
     """
     redes: dict[str, str] = {}
+    # QinQ: la etiqueta externa del slice (una para todos sus enlaces).
+    slc.vlan_servicio = allocator.reservar_servicio(slc.id)
 
     if slc.tipo_topologia == TipoTopologia.BUS:
         # Un único dominio de difusión para todo el slice: UNA sola VLAN,

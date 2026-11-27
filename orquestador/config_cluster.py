@@ -23,9 +23,11 @@ POOL_LIBVIRT = "default"
 # VLAN_FIN) -- sin un bridge OVS real todavía, crear esos enlaces fallará;
 # queda documentado como limitación pendiente, no simulado como si ya funcionara.
 WORKERS = {
-    "server1": {"ip": "192.168.201.1", "bridge": "br-int", "uplink": "ens4"},   # uplink verificado con ovs-vsctl list-ports (24-nov)
-    "server2": {"ip": "192.168.201.2", "bridge": "br-int", "uplink": "ens4"},   # uplink verificado con ovs-vsctl list-ports (24-nov)
-    "server3": {"ip": "192.168.201.3", "bridge": "br-int", "uplink": "ens4"},   # uplink verificado con ovs-vsctl list-ports (24-nov)
+    # uplink: verificado con ovs-vsctl list-ports (24-nov), va a MPLink1 (gestión).
+    # uplink_datos: ens3, directo a ovs1 (26-nov); se usa solo con UPLINK_DATOS_SEPARADO = True.
+    "server1": {"ip": "192.168.201.1", "bridge": "br-int", "uplink": "ens4", "uplink_datos": "ens3"},
+    "server2": {"ip": "192.168.201.2", "bridge": "br-int", "uplink": "ens4", "uplink_datos": "ens3"},
+    "server3": {"ip": "192.168.201.3", "bridge": "br-int", "uplink": "ens4", "uplink_datos": "ens3"},
     # server4 (192.168.201.4) existe pero NO es un worker KVM: sin br-int/libvirt/OVS visibles y el
     # headnode no entra por SSH (24-nov). Descomentar solo si Germán confirma que se usa y lo habilitan.
     # "server4": {"ip": "192.168.201.4", "bridge": "br-int"},
@@ -108,20 +110,35 @@ SWITCH_OVS = {
     "destino_ssh": "ubuntu@192.168.201.5",
     "puerto_por_host": {"server1": "ens4", "server2": "ens5", "server3": "ens6"},
 }
-# Q-in-Q / 802.1ad (R5, pedido por Germán 25-nov-2026 tras su objeción al límite
-# de 4094 VLAN de 802.1Q): envuelve TODO el tráfico que cruza el uplink de cada
-# server (y el puerto equivalente en ovs1, si SWITCH_OVS está configurado) en
-# una segunda VLAN exterior fija ("S-VLAN", aquí 100) -- las VLAN de cada
-# enlace (C-VLAN, VLAN_INICIO/VLAN_FIN arriba) siguen siendo una por enlace,
-# sin cambios, y las VMs no ven ni usan esta segunda etiqueta para nada (ver
-# driver_linux._interfaz_xml -- su puerto OVS sigue siendo access, intacto).
-# "qinq": True activado 26-nov tras probar a mano (por SSH, con vigía de
-# auto-reversion de 30s como red de seguridad) que vlan_mode=dot1q-tunnel en
-# ens4 de server1 NO corta la gestion SSH -- confirmado con 'echo SIGUE-VIVO'
-# mientras el puerto estaba en ese modo.
-CONTROL_BROADCAST = {"limite_pps": 200, "rafaga": 100, "vlan_sin_uso": 4094, "storm_control": True,
-                     "qinq": True, "qinq_svlan": 100, "qinq_ethertype": "0x8100"}
+# NOTA (28-nov): se probó en vivo un esquema anterior de una sola S-VLAN fija
+# (100) para todo el clúster (CONTROL_BROADCAST["qinq"]). Confirmó que
+# vlan_mode=dot1q-tunnel no corta la gestión SSH, pero no aísla nada entre
+# slices (todos comparten la misma etiqueta exterior) y, aplicado sobre ens4
+# (compartido con la gestión) con trunks restringidos, igual puede cortar el
+# SSH según la doc de OVS (frames no coincidentes se descartan). Se reemplaza
+# por el esquema de abajo (QINQ por slice + UPLINK_DATOS_SEPARADO), que sí
+# cumple el pedido real de Germán y separa datos de gestión.
+CONTROL_BROADCAST = {"limite_pps": 200, "rafaga": 100, "vlan_sin_uso": 4094, "storm_control": True}
 
+# Aislamiento entre slices con QinQ (802.1ad), indicado por Germán (25-nov): etiqueta externa
+# (S-VLAN, rango 2000-2999) = una por slice; etiqueta interna (C-VLAN) = la VLAN de cada enlace.
+# Con "activo": True, en cada server se crea el bridge 'br-qinq', el uplink (ens4) pasa de
+# br-int a br-qinq y cada slice sale por un puerto dot1q-tunnel con su S-VLAN. Lo no etiquetado
+# (gestión) sigue llegando a br-int por el puente qnat-int/qnat-ext, y si el comando no se
+# confirma en 30 s el vigía de driver_linux devuelve ens4 a br-int solo.
+# Viene APAGADO: activarlo cuando se pruebe en el clúster (ver PR de QinQ).
+#  - ethertype: "802.1ad" (TPID 0x88a8, estándar) o "802.1q" (0x8100) si ovs1 no reenvía 802.1ad.
+#  - mtu_vm: MTU de las interfaces de enlace de las VMs (dos etiquetas = 8 bytes más por trama).
+# Para volver a una sola etiqueta: "activo": False y, en cada server, devolver el uplink a br-int:
+#   sudo ovs-vsctl --if-exists del-port br-qinq ens4 -- --may-exist add-port br-int ens4
+# Uplink de datos separado (R5, 27-nov): con True, las VLANs de las VMs salen por
+# "uplink_datos" (ens3 -> ovs1) y "uplink" (ens4 -> MPLink1) queda solo con la gestión.
+# Así lo pide el enunciado (tráfico de VMs por OVS) y un error en las VLANs no corta el SSH.
+# Activar después de confirmar el enlace ens3 <-> ovs1 con una prueba manual (ver nota abajo).
+# Con QinQ activo además, ens3 va a br-qinq y ens4 ya no se mueve de br-int.
+UPLINK_DATOS_SEPARADO = False
+
+QINQ = {"activo": False, "bridge": "br-qinq", "ethertype": "802.1ad", "mtu_vm": 1496}
 
 def uri(worker: str) -> str:
     return f"qemu+ssh://{USUARIO_SSH}@{WORKERS[worker]['ip']}/system"

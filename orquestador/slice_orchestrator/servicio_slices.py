@@ -305,7 +305,8 @@ class ServicioSlices:
         alloc = network_manager.VLANAllocator()
         for slc in self._slices.values():
             if slc.estado == EstadoSlice.ACTIVO:
-                alloc.restaurar(slc.id, [e.vlan_id for e in slc.enlaces if e.vlan_id is not None])
+                alloc.restaurar(slc.id, [e.vlan_id for e in slc.enlaces if e.vlan_id is not None],
+                                slc.vlan_servicio)
         return alloc
 
     def _actualizar_control_broadcast(self) -> dict | None:
@@ -314,6 +315,7 @@ class ServicioSlices:
         aquí se registra, pero no deshace el cambio que lo disparó."""
         if not hasattr(self._driver, "aplicar_control_broadcast"):
             return None
+        self._asegurar_vlan_servicio()
         plan = control_broadcast.calcular_plan(self._slices.values())
         cfg = control_broadcast.ConfigBroadcast.desde_modulo(cfg_cluster)
         uris = {h.id: h.uri_libvirt for h in self._hosts_base}
@@ -325,6 +327,20 @@ class ServicioSlices:
         for err in reporte.get("errores", []):
             logger.warning("Control de broadcast: %s", err)
         return reporte
+
+    def _asegurar_vlan_servicio(self) -> None:
+        """QinQ: los slices desplegados antes de QinQ no tienen S-VLAN. Se les
+        asigna una (libre) la primera vez que se recalcula la red, y se guarda."""
+        faltan = [s for s in self._slices.values()
+                  if s.estado == EstadoSlice.ACTIVO and s.vlan_servicio is None]
+        if not faltan:
+            return
+        alloc = self._allocator()
+        for slc in faltan:
+            slc.vlan_servicio = alloc.reservar_servicio(slc.id)
+            logger.info("Slice %s sin S-VLAN (anterior a QinQ): se le asigna %d",
+                        slc.id, slc.vlan_servicio)
+        self._guardar()
 
     def estado_broadcast(self) -> list[dict[str, Any]]:
         """Por servidor: VLANs con VMs, cuáles cruzan el uplink (las que tienen
@@ -562,6 +578,7 @@ class ServicioSlices:
             for e in trabajo.enlaces:
                 e.vlan_id = None
                 e.nombre_red = None
+            trabajo.vlan_servicio = None
             self._slices[slice_id] = trabajo
             self._guardar()
             logger.info("[%s] editó %s (%d operaciones)", usuario, slice_id, len(operaciones))
@@ -705,7 +722,8 @@ class ServicioSlices:
                         "vlan": e.vlan_id, "red": e.nombre_red} for e in slc.enlaces]
             return {"id": slc.id, "nombre": slc.nombre, "owner": slc.owner,
                     "estado": slc.estado.value, "tipo": slc.tipo_topologia.value,
-                    "zona": slc.zona_disponibilidad, "nodos": nodos, "enlaces": enlaces}
+                    "zona": slc.zona_disponibilidad, "vlan_servicio": slc.vlan_servicio,
+                    "nodos": nodos, "enlaces": enlaces}
 
     def eliminar_slice(self, usuario: str, slice_id: str) -> dict[str, Any]:
         usuario = self._usuario(usuario)

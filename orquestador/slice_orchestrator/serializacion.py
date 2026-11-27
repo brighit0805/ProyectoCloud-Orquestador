@@ -46,6 +46,7 @@ def slice_a_dict(slc: Slice) -> dict[str, Any]:
         "tipo_topologia": slc.tipo_topologia.value,
         "estado": slc.estado.value,
         "zona_disponibilidad": slc.zona_disponibilidad,
+        "vlan_servicio": slc.vlan_servicio,
         "nodos": [asdict(n) for n in slc.nodos],
         "enlaces": [asdict(e) for e in slc.enlaces],
     }
@@ -59,6 +60,7 @@ def slice_desde_dict(d: dict[str, Any]) -> Slice:
         tipo_topologia=TipoTopologia(d["tipo_topologia"]),
         estado=EstadoSlice(d["estado"]),
         zona_disponibilidad=d.get("zona_disponibilidad"),
+        vlan_servicio=d.get("vlan_servicio"),      # None en estados anteriores a QinQ
         nodos=[Nodo(**n) for n in d["nodos"]],
         enlaces=[Enlace(**e) for e in d["enlaces"]],
     )

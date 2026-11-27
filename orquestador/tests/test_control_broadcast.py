@@ -123,12 +123,12 @@ class TestComandos(unittest.TestCase):
 
     def test_uplink_solo_con_vlans_que_cruzan(self):
         cmds = cb.comandos_host("server1", self.plan, CFG)
-        self.assertIn(f"sudo ovs-vsctl set port ens4 vlan_mode=trunk trunks={self.cruza}", cmds)
+        self.assertIn(f"sudo ovs-vsctl set port ens4 vlan_mode=native-untagged tag=0 trunks={self.cruza}", cmds)
 
     def test_uplink_sin_vlans_usa_vlan_reservada(self):
         """trunks vacío en OVS significa TODAS las VLANs: nunca se deja vacío."""
         cmds = cb.comandos_host("server3", self.plan, CFG)
-        self.assertIn("sudo ovs-vsctl set port ens4 vlan_mode=trunk trunks=4094", cmds)
+        self.assertIn("sudo ovs-vsctl set port ens4 vlan_mode=native-untagged tag=0 trunks=4094", cmds)
         self.assertFalse(any("add-meter" in c for c in cmds))
 
     def test_storm_control_un_meter_y_una_regla_por_puerto(self):
@@ -170,9 +170,9 @@ class TestComandos(unittest.TestCase):
     def test_switch_poda_cada_puerto(self):
         cmds = cb.comandos_switch(self.plan, CFG)
         self.assertEqual(cmds, [
-            f"sudo ovs-vsctl set port eth1 vlan_mode=trunk trunks={self.cruza}",
-            f"sudo ovs-vsctl set port eth2 vlan_mode=trunk trunks={self.cruza}",
-            "sudo ovs-vsctl set port eth3 vlan_mode=trunk trunks=4094",
+            f"sudo ovs-vsctl set port eth1 vlan_mode=native-untagged tag=0 trunks={self.cruza}",
+            f"sudo ovs-vsctl set port eth2 vlan_mode=native-untagged tag=0 trunks={self.cruza}",
+            "sudo ovs-vsctl set port eth3 vlan_mode=native-untagged tag=0 trunks=4094",
         ])
 
     def test_sin_switch_no_toca_ovs1(self):
@@ -197,14 +197,15 @@ class TestConfigDesdeModulo(unittest.TestCase):
         self.assertIsNone(cfg.switch)
         self.assertEqual(cfg.uplink_por_host, {})
 
-    def test_config_cluster_real_poda_uplinks_pero_no_toca_ovs1(self):
-        """Uplinks de los servers confirmados (ens4, 24-nov); ovs1 sigue sin
-        configurar hasta tener el nombre de sus puertos."""
+    def test_config_cluster_real_poda_uplinks_y_ovs1(self):
+        """Uplinks de los servers confirmados (ens4, 24-nov) y puertos de ovs1
+        hacia cada server (ens4/ens5/ens6, 26-nov)."""
         import config_cluster
         cfg = cb.ConfigBroadcast.desde_modulo(config_cluster)
         self.assertEqual(cfg.uplink_por_host,
                          {h: "ens4" for h in config_cluster.WORKERS})
-        self.assertIsNone(cfg.switch)
+        self.assertEqual(cfg.switch.puerto_por_host,
+                         {"server1": "ens4", "server2": "ens5", "server3": "ens6"})
         self.assertEqual(set(cfg.bridge_por_host), set(config_cluster.WORKERS))
 
 
@@ -235,7 +236,12 @@ class TestDriverLinux(unittest.TestCase):
         self.assertEqual(destinos, ["ubuntu@10.0.0.1", "ubuntu@10.0.0.2", "ubuntu@10.0.0.3",
                                     "ubuntu@192.168.201.15"])
         primero = ssh.call_args_list[0].args[1]
-        self.assertEqual(primero, " && ".join(cb.comandos_host("server1", self.plan, CFG)))
+        # Va envuelto en el vigía de auto-reversión: primero el vigía en
+        # segundo plano, luego los comandos reales y al final el marcador.
+        self.assertTrue(primero.startswith("(sleep 30; "))
+        self.assertIn(" && ".join(cb.comandos_host("server1", self.plan, CFG)) + " && touch ", primero)
+        for c in cb.comandos_revertir_host("server1", CFG):
+            self.assertIn(c, primero)
 
     def test_real_un_error_no_detiene_a_los_demas(self):
         d = DriverLinux(modo=ModoDriver.REAL)

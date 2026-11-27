@@ -21,6 +21,28 @@ puede inyectar:
    supere ``limite_pps`` paquetes por segundo. El resto del tráfico sigue por
    la acción NORMAL, sin cambios.
 
+4. QinQ (802.1ad, pedido por Germán el 25-nov), si ``QINQ`` está activo en
+   config_cluster: cada slice tiene una S-VLAN (etiqueta externa, TPID
+   0x88a8) y cada enlace su C-VLAN (etiqueta interna, 0x8100, la de siempre).
+   En cada servidor:
+
+       VM --(access C)--> br-int --patch qi<S> (trunk de las C del slice)-->
+       br-qinq --patch qe<S> (dot1q-tunnel tag=S)--> uplink (trunk de S) --> ovs1
+
+   El puerto ``dot1q-tunnel`` pone la etiqueta del slice encima de la del
+   enlace al salir y la quita al entrar. Hacia ovs1 solo viajan S-VLANs: el
+   aislamiento entre slices lo da la etiqueta externa y la poda del uplink y
+   de ovs1 se hace por slice.
+
+5. Uplink de datos separado (``UPLINK_DATOS_SEPARADO`` en config_cluster):
+   el tráfico de las VMs sale por ``ens3`` (directo a ovs1) y ``ens4``
+   (MPLink1, red de gestión) queda solo con la gestión, sin etiqueta. Es lo
+   que pide el enunciado (VMs por OVS, gestión por su switch) y evita que un
+   cambio de VLANs en el uplink de datos pueda cortar el SSH. Para no armar
+   un bucle entre MPLink1 y ovs1: ``ens3`` va en ``trunk`` a secas (descarta
+   lo no etiquetado) y una VLAN nunca queda permitida en los dos puertos (se
+   poda ``ens4`` ANTES de dar VLANs a ``ens3``).
+
 El módulo es puro: calcula el plan a partir de los slices activos y genera
 los comandos. Quien los ejecuta es el driver (``DriverLinux``), que los
 recalcula completos tras cada despliegue, edición o eliminación: el estado
@@ -52,6 +74,9 @@ class PlanBroadcast:
     """Estado deseado del control de broadcast, derivado de los slices activos."""
     vlans_por_host: dict[str, set[int]] = field(default_factory=dict)
     puertos_por_host: dict[str, list[PuertoVM]] = field(default_factory=dict)
+    # QinQ: S-VLAN de cada slice y, por host, las C-VLAN de cada slice.
+    servicio_por_slice: dict[str, int] = field(default_factory=dict)
+    vlans_por_slice_host: dict[str, dict[str, set[int]]] = field(default_factory=dict)
 
     def hosts_de_vlan(self, vlan: int) -> set[str]:
         return {h for h, vs in self.vlans_por_host.items() if vlan in vs}
@@ -60,6 +85,21 @@ class PlanBroadcast:
         """VLANs del host que también tienen VMs en otro servidor: las únicas
         que deben cruzar su uplink."""
         return {v for v in self.vlans_por_host.get(host, set()) if len(self.hosts_de_vlan(v)) > 1}
+
+    def slices_que_salen(self, host: str) -> dict[str, set[int]]:
+        """QinQ: por cada slice con VMs en ``host``, sus C-VLAN que cruzan el
+        uplink. Un slice con todas sus VMs en el mismo servidor no aparece."""
+        salen = self.vlans_que_salen(host)
+        res: dict[str, set[int]] = {}
+        for sid, vlans in self.vlans_por_slice_host.get(host, {}).items():
+            if vlans & salen:
+                res[sid] = vlans & salen
+        return res
+
+    def svlans_que_salen(self, host: str) -> set[int]:
+        """QinQ: S-VLAN de los slices que cruzan el uplink de ``host``."""
+        return {self.servicio_por_slice[s] for s in self.slices_que_salen(host)
+                if s in self.servicio_por_slice}
 
     def resumen(self) -> list[dict[str, Any]]:
         filas = []
@@ -71,6 +111,7 @@ class PlanBroadcast:
                 "vlans": sorted(locales),
                 "vlans_uplink": sorted(salen),
                 "vlans_solo_locales": sorted(locales - salen),
+                "svlans_uplink": sorted(self.svlans_que_salen(host)),
                 "puertos_con_storm_control": len(self.puertos_por_host.get(host, [])),
             })
         return filas
@@ -82,11 +123,15 @@ def calcular_plan(slices: Iterable[Slice]) -> PlanBroadcast:
     for slc in slices:
         if slc.estado != EstadoSlice.ACTIVO:
             continue
+        if slc.vlan_servicio is not None:
+            plan.servicio_por_slice[slc.id] = slc.vlan_servicio
         for nodo in slc.nodos:
             if nodo.host_id is None:
                 continue
             for itf in interfaces_de(slc, nodo):
                 plan.vlans_por_host.setdefault(nodo.host_id, set()).add(itf.vlan)
+                plan.vlans_por_slice_host.setdefault(nodo.host_id, {}).setdefault(
+                    slc.id, set()).add(itf.vlan)
                 plan.puertos_por_host.setdefault(nodo.host_id, []).append(
                     PuertoVM(slc.id, nodo.nombre, itf.mac, itf.vlan))
     for puertos in plan.puertos_por_host.values():
@@ -99,6 +144,26 @@ class ConfigSwitch:
     """ovs1: el switch OVS que une los servidores del clúster Linux."""
     destino_ssh: str                          # p. ej. "ubuntu@192.168.201.15"
     puerto_por_host: dict[str, str]           # host_id -> puerto de ovs1 hacia ese servidor
+
+
+ETHERTYPES_QINQ = ("802.1ad", "802.1q")
+
+
+@dataclass
+class ConfigQinQ:
+    """QinQ en los servidores Linux. ``bridge`` es el bridge "proveedor" que
+    se crea en cada servidor: ahí quedan el uplink y un puerto dot1q-tunnel
+    por slice. ``ethertype`` es el TPID de la etiqueta externa: 802.1ad
+    (0x88a8, el estándar) o 802.1q (0x8100) si algún equipo no entiende el
+    primero. ``mtu_vm`` es el MTU de las interfaces de enlace de las VMs."""
+    bridge: str = "br-qinq"
+    ethertype: str = "802.1ad"
+    mtu_vm: int | None = 1496
+
+    def __post_init__(self) -> None:
+        if self.ethertype not in ETHERTYPES_QINQ:
+            raise ValueError(f"ethertype QinQ inválido: {self.ethertype!r} "
+                             f"(use {' o '.join(ETHERTYPES_QINQ)})")
 
 
 @dataclass
@@ -115,12 +180,10 @@ class ConfigBroadcast:
     vlan_sin_uso: int = 4094                  # trunks vacío en OVS = TODAS las VLANs
     cookie: int = 0xB0CA57
     storm_control: bool = True
-    # Q-in-Q / 802.1ad (R5, pedido por Germán 25-nov-2026 tras su objeción al
-    # límite de 4094 VLAN de 802.1Q). Ver nota larga en comandos_host() sobre
-    # qué resuelve y qué no esta primera versión.
-    qinq: bool = False
-    qinq_svlan: int | None = None              # UNA sola S-VLAN, fija, para todo el clúster
-    qinq_ethertype: str = "0x8100"             # 0x88a8 (802.1ad "real") si el switch de arriba lo soporta
+    qinq: ConfigQinQ | None = None            # None = una sola etiqueta (VLAN por enlace)
+    # Con uplink de datos separado: host -> puerto que queda SOLO para gestión
+    # (sin etiqueta). Vacío = el uplink lleva datos y gestión (como antes).
+    gestion_por_host: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def desde_modulo(cls, cfg: Any) -> "ConfigBroadcast":
@@ -129,20 +192,38 @@ class ConfigBroadcast:
         workers = getattr(cfg, "WORKERS", {}) or {}
         bridges = {h: d["bridge"] for h, d in workers.items() if d.get("bridge")}
         uplinks = {h: d["uplink"] for h, d in workers.items() if d.get("uplink")}
+        gestion: dict[str, str] = {}
+        if getattr(cfg, "UPLINK_DATOS_SEPARADO", False):
+            # Solo los hosts que declaran su puerto de datos; el resto sigue igual.
+            for h, d in workers.items():
+                if d.get("uplink_datos") and d.get("uplink") and d["uplink_datos"] != d["uplink"]:
+                    gestion[h] = d["uplink"]
+                    uplinks[h] = d["uplink_datos"]
         sw = getattr(cfg, "SWITCH_OVS", None)
         switch = None
         if sw and sw.get("destino_ssh") and sw.get("puerto_por_host"):
             switch = ConfigSwitch(sw["destino_ssh"], dict(sw["puerto_por_host"]))
         bc = getattr(cfg, "CONTROL_BROADCAST", {}) or {}
+        q = getattr(cfg, "QINQ", None) or {}
+        qinq = None
+        if q.get("activo"):
+            dq = ConfigQinQ()
+            qinq = ConfigQinQ(bridge=q.get("bridge", dq.bridge),
+                              ethertype=q.get("ethertype", dq.ethertype),
+                              mtu_vm=q.get("mtu_vm", dq.mtu_vm))
         d = cls()
-        return cls(bridge_por_host=bridges, uplink_por_host=uplinks, switch=switch,
+        return cls(bridge_por_host=bridges, uplink_por_host=uplinks, switch=switch, qinq=qinq,
+                   gestion_por_host=gestion,
                    limite_pps=int(bc.get("limite_pps", d.limite_pps)),
                    rafaga=int(bc.get("rafaga", d.rafaga)),
                    vlan_sin_uso=int(bc.get("vlan_sin_uso", d.vlan_sin_uso)),
-                   storm_control=bool(bc.get("storm_control", d.storm_control)),
-                   qinq=bool(bc.get("qinq", d.qinq)),
-                   qinq_svlan=(int(bc["qinq_svlan"]) if bc.get("qinq_svlan") is not None else None),
-                   qinq_ethertype=str(bc.get("qinq_ethertype", d.qinq_ethertype)))
+                   storm_control=bool(bc.get("storm_control", d.storm_control)))
+
+
+def _modo_poda(vlans: set[int], cfg: "ConfigBroadcast") -> str:
+    """Modo de un puerto podado: pasa lo no etiquetado (gestión) y solo las
+    VLANs indicadas (ver comandos_host)."""
+    return f"vlan_mode=native-untagged tag=0 trunks={_trunks(vlans, cfg.vlan_sin_uso)}"
 
 
 def _trunks(vlans: set[int], vlan_sin_uso: int) -> str:
@@ -159,48 +240,18 @@ def comandos_host(host: str, plan: PlanBroadcast, cfg: ConfigBroadcast) -> list[
     of13 = f"sudo ovs-ofctl -O OpenFlow13"
     cmds = [f"sudo ovs-vsctl set bridge {bridge} protocols=OpenFlow10,OpenFlow13"]
     uplink = cfg.uplink_por_host.get(host)
-    if uplink:
-        trunks = _trunks(plan.vlans_que_salen(host), cfg.vlan_sin_uso)
-        if cfg.qinq and cfg.qinq_svlan is not None:
-            # Q-in-Q (802.1ad): el puerto deja de ser un trunk 802.1Q plano y
-            # pasa a "dot1q-tunnel" -- OVS añade SIEMPRE una segunda etiqueta
-            # exterior (la S-VLAN fija del clúster) a todo lo que sale por
-            # este puerto, y la quita a todo lo que entra, ANTES de que el
-            # resto del pipeline vea el paquete. La poda de VLANs de siempre
-            # (`trunks`, la lista de C-VLAN que de verdad cruzan a otro
-            # servidor) se conserva tal cual -- sigue restringiendo qué
-            # C-VLAN interiores puede llevar el túnel, ahora dentro de la
-            # S-VLAN exterior en vez de a secas.
-            #
-            # Qué multiplica y qué no (ver docstring de ConfigBroadcast):
-            # dentro de ESTE clúster la C-VLAN sigue siendo única por enlace
-            # (el VLANAllocator no cambia) -- lo que gana con esto es que el
-            # backbone compartido (ovs1 y lo que haya detrás) puede traer
-            # tráfico de OTRO grupo/clúster con sus propias C-VLAN sin que
-            # choquen con las nuestras, porque cada uno queda envuelto en su
-            # propia S-VLAN. Dar a cada SLICE (no a todo el clúster) su propia
-            # S-VLAN sobre este mismo puerto compartido exigiría reglas
-            # OpenFlow por C-VLAN que decidieran cuál S-VLAN empujar -- se
-            # dejó fuera a propósito: no hay forma de validarlas sin acceso
-            # real al clúster antes del freeze del 5-dic, y una regla mal
-            # escrita ahí corta la conectividad del uplink completo.
-            cmds.append(f"sudo ovs-vsctl set port {uplink} vlan_mode=dot1q-tunnel "
-                        f"tag={cfg.qinq_svlan} trunks={trunks} "
-                        f"other_config:qinq-ethtype={cfg.qinq_ethertype}")
-        else:
-            # IMPORTANTE (encontrado en vivo el 26-nov probando contra el
-            # clúster real): NUNCA usar vlan_mode=trunk a secas aquí. Este
-            # mismo puerto (uplink) suele llevar también el tráfico de
-            # gestión (SSH) hacia el propio servidor, que viaja SIN etiqueta
-            # VLAN. "trunk" a secas descarta todo lo no etiquetado, así que
-            # el comando se corta la conexión que lo está aplicando (si se
-            # ejecuta por SSH, la sesión se queda "colgada" -- no es que el
-            # comando falle, es que ya no hay forma de ver su respuesta).
-            # "native-untagged" dice: deja pasar lo no etiquetado como
-            # siempre (gestión) Y ADEMÁS lo etiquetado de `trunks` (los
-            # enlaces entre VMs) -- así no nos cortamos el acceso remoto.
-            cmds.append(f"sudo ovs-vsctl set port {uplink} vlan_mode=native-untagged "
-                        f"tag=0 trunks={trunks}")
+    gestion = cfg.gestion_por_host.get(host)
+    if uplink and gestion:
+        cmds.extend(_comandos_datos_separados(host, bridge, uplink, gestion, plan, cfg))
+    elif uplink and cfg.qinq is not None:
+        cmds.extend(_comandos_qinq(host, bridge, uplink, plan, cfg))
+    elif uplink:
+        # NUNCA vlan_mode=trunk a secas (encontrado en vivo el 26-nov): el
+        # uplink también lleva la gestión (SSH) SIN etiqueta y "trunk" la
+        # descarta, cortando la sesión que aplica el comando.
+        # "native-untagged" + tag=0 deja pasar lo no etiquetado como siempre
+        # y, además, solo las VLANs de `trunks`.
+        cmds.append(f"sudo ovs-vsctl set port {uplink} {_modo_poda(plan.vlans_que_salen(host), cfg)}")
     if cfg.storm_control:
         cookie = f"0x{cfg.cookie:x}"
         # Se borra solo lo nuestro (por cookie) y se vuelve a crear: idempotente.
@@ -217,54 +268,153 @@ def comandos_host(host: str, plan: PlanBroadcast, cfg: ConfigBroadcast) -> list[
     return cmds
 
 
+PUENTE_NATIVO = ("qnat-int", "qnat-ext")       # br-int <-> br-qinq, solo tráfico sin etiqueta
+
+
+def puertos_patch(vlan_servicio: int) -> tuple[str, str]:
+    """Nombres del par de puertos patch de un slice: lado br-int y lado QinQ."""
+    return f"qi{vlan_servicio}", f"qe{vlan_servicio}"
+
+
+def _limpiar_patches(bridge: str, prefijo: str, deseados: list[str]) -> str:
+    """Borra los puertos patch ``<prefijo><n>`` del bridge que ya no están en
+    el plan (slices eliminados). Solo toca los nombres que crea este módulo."""
+    lista = " ".join(deseados)
+    return (f"for p in $(sudo ovs-vsctl list-ports {bridge}); do case \"$p\" in "
+            f"{prefijo}[0-9]*) case \" {lista} \" in *\" $p \"*) ;; "
+            f"*) sudo ovs-vsctl del-port {bridge} \"$p\" ;; esac ;; esac; done")
+
+
+def _comandos_datos_separados(host: str, bridge: str, datos: str, gestion: str,
+                              plan: PlanBroadcast, cfg: ConfigBroadcast) -> list[str]:
+    """Uplink de datos dedicado (``datos``, hacia ovs1) y uplink de gestión
+    (``gestion``) que se queda en ``bridge`` solo con lo no etiquetado."""
+    vsctl = "sudo ovs-vsctl"
+    destino = cfg.qinq.bridge if cfg.qinq is not None else bridge
+    salen = plan.svlans_que_salen(host) if cfg.qinq is not None else plan.vlans_que_salen(host)
+    cmds = [
+        # 1) Primero se saca toda VLAN de enlace del puerto de gestión: así
+        #    nunca hay una VLAN permitida en los dos caminos (MPLink1 y ovs1).
+        f"{vsctl} set port {gestion} {_modo_poda(set(), cfg)}",
+        # 2) El puerto de datos arriba (sin IP). Entre llaves para que, si
+        #    'ip' no tiene sudo sin clave, no corte la cadena de comandos.
+        f"{{ sudo -n ip link set dev {datos} up || true; }}",
+    ]
+    if cfg.qinq is not None:
+        cmds += [f"{vsctl} set Open_vSwitch . other_config:vlan-limit=2",
+                 f"{vsctl} --may-exist add-br {destino}"]
+    # 3) El puerto de datos en su bridge, en trunk A SECAS: descarta lo no
+    #    etiquetado, así la gestión nunca da la vuelta por ovs1.
+    cmds.append(f"{vsctl} --may-exist add-port {destino} {datos} "
+                f"-- set port {datos} vlan_mode=trunk trunks={_trunks(salen, cfg.vlan_sin_uso)}")
+    if cfg.qinq is not None:
+        cmds += _patches_qinq(host, bridge, plan, cfg)
+    return cmds
+
+
+def _patches_qinq(host: str, bridge: str, plan: PlanBroadcast, cfg: ConfigBroadcast) -> list[str]:
+    """Un par de patches por slice que sale del servidor (dot1q-tunnel del
+    lado QinQ) y limpieza de los de slices que ya no están."""
+    q = cfg.qinq
+    assert q is not None
+    ext, vsctl = q.bridge, "sudo ovs-vsctl"
+    cmds: list[str] = []
+    lado_int: list[str] = []
+    lado_ext: list[str] = []
+    for sid, cvlans in sorted(plan.slices_que_salen(host).items()):
+        s = plan.servicio_por_slice.get(sid)
+        if s is None:
+            continue
+        pi, pe = puertos_patch(s)
+        c = ",".join(str(v) for v in sorted(cvlans))
+        cmds.append(f"{vsctl} --may-exist add-port {bridge} {pi} "
+                    f"-- set interface {pi} type=patch options:peer={pe} "
+                    f"-- set port {pi} vlan_mode=trunk trunks={c}")
+        cmds.append(f"{vsctl} --may-exist add-port {ext} {pe} "
+                    f"-- set interface {pe} type=patch options:peer={pi} "
+                    f"-- set port {pe} vlan_mode=dot1q-tunnel tag={s} cvlans={c} "
+                    f"other_config:qinq-ethtype={q.ethertype}")
+        lado_int.append(pi)
+        lado_ext.append(pe)
+    cmds.append(_limpiar_patches(bridge, "qi", lado_int))
+    cmds.append(_limpiar_patches(ext, "qe", lado_ext))
+    return cmds
+
+
+def _comandos_qinq(host: str, bridge: str, uplink: str, plan: PlanBroadcast,
+                   cfg: ConfigBroadcast) -> list[str]:
+    """QinQ en un servidor (ver el docstring del módulo). Idempotente: se
+    puede reaplicar con el plan completo tras cada cambio."""
+    q = cfg.qinq
+    assert q is not None
+    ext = q.bridge
+    vsctl = "sudo ovs-vsctl"
+    ni, ne = PUENTE_NATIVO
+    cmds = [
+        # Sin esto OVS solo procesa una etiqueta y dot1q-tunnel no funciona.
+        f"{vsctl} set Open_vSwitch . other_config:vlan-limit=2",
+        f"{vsctl} --may-exist add-br {ext}",
+        # Puente para lo NO etiquetado (la gestión que hoy entra por el uplink
+        # a br-int): se crea ANTES de mover el uplink, así ese tráfico sigue
+        # llegando a br-int. Puertos access con tag=0: no dejan pasar ninguna
+        # VLAN de enlace, que solo cruza por los puertos QinQ de cada slice.
+        f"{vsctl} --may-exist add-port {bridge} {ni} "
+        f"-- set interface {ni} type=patch options:peer={ne} -- set port {ni} vlan_mode=access tag=0",
+        f"{vsctl} --may-exist add-port {ext} {ne} "
+        f"-- set interface {ne} type=patch options:peer={ni} -- set port {ne} vlan_mode=access tag=0",
+        # El uplink pasa del bridge de las VMs al bridge QinQ (solo la primera vez).
+        f"{vsctl} --if-exists del-port {bridge} {uplink} -- --may-exist add-port {ext} {uplink}",
+        f"{vsctl} set port {uplink} {_modo_poda(plan.svlans_que_salen(host), cfg)}",
+    ]
+    return cmds + _patches_qinq(host, bridge, plan, cfg)
+
+
+def comandos_switch(plan: PlanBroadcast, cfg: ConfigBroadcast) -> list[str]:
+    """Poda de VLANs en ovs1: cada puerto hacia un servidor lleva solo las
+    VLANs que ese servidor comparte con otro (las únicas que cruzan ovs1).
+    Con QinQ, ovs1 solo ve S-VLANs: se poda por slice."""
+    if cfg.switch is None:
+        return []
+    # ovs1 NO usa dot1q-tunnel: la trama ya llega con las dos etiquetas desde
+    # el servidor y ovs1 solo reenvía por la externa (ponerle otra la dejaría
+    # con tres). Mismo modo native-untagged que en comandos_host.
+    salen = plan.svlans_que_salen if cfg.qinq is not None else plan.vlans_que_salen
+    return [f"sudo ovs-vsctl set port {puerto} {_modo_poda(salen(host), cfg)}"
+            for host, puerto in sorted(cfg.switch.puerto_por_host.items())]
+
+
 def comandos_revertir_host(host: str, cfg: ConfigBroadcast) -> list[str]:
-    """Deshace SOLO el cambio riesgoso (el modo del puerto uplink), dejándolo
-    sin restricción de VLAN -- es lo que corre la red de seguridad (ver
-    driver_linux._ejecutar_con_auto_reversion) si el comando real no llega a
-    confirmarse a tiempo. No toca storm control (flows/meters): esos no
-    pueden cortar la conexión de gestión, así que no necesitan red de
-    seguridad."""
+    """Deshace SOLO el cambio riesgoso del uplink (lo corre el vigía de
+    driver_linux._ejecutar_con_auto_reversion si el comando real no se
+    confirma a tiempo). Con QinQ, además devuelve el uplink a br-int. No toca
+    storm control (flows/meters): eso no puede cortar la gestión."""
     uplink = cfg.uplink_por_host.get(host)
+    bridge = cfg.bridge_por_host.get(host)
+    gestion = cfg.gestion_por_host.get(host)
     if not uplink:
         return []
-    return [f"sudo ovs-vsctl clear port {uplink} vlan_mode",
-            f"sudo ovs-vsctl clear port {uplink} tag",
-            f"sudo ovs-vsctl clear port {uplink} trunks"]
+    if gestion:
+        # Datos separados: lo riesgoso es la poda del puerto de gestión. Se
+        # deja sin restricción y se saca el puerto de datos (si algo falló,
+        # así tampoco puede quedar un bucle entre MPLink1 y ovs1).
+        return [f"sudo ovs-vsctl --if-exists del-port {uplink}",
+                f"sudo ovs-vsctl clear port {gestion} vlan_mode",
+                f"sudo ovs-vsctl clear port {gestion} tag",
+                f"sudo ovs-vsctl clear port {gestion} trunks"]
+    cmds = []
+    if cfg.qinq is not None and bridge:
+        cmds.append(f"sudo ovs-vsctl --if-exists del-port {cfg.qinq.bridge} {uplink} "
+                    f"-- --may-exist add-port {bridge} {uplink}")
+    return cmds + [f"sudo ovs-vsctl clear port {uplink} vlan_mode",
+                   f"sudo ovs-vsctl clear port {uplink} tag",
+                   f"sudo ovs-vsctl clear port {uplink} trunks"]
 
 
 def comandos_revertir_switch(cfg: ConfigBroadcast) -> dict[str, list[str]]:
-    """Igual que ``comandos_revertir_host`` pero para cada puerto de ovs1,
-    uno por host (la reversión se corre en la sesión SSH hacia ovs1, por
-    host, igual que ``comandos_switch`` arma el cambio por host)."""
+    """Igual que ``comandos_revertir_host`` para cada puerto de ovs1."""
     if cfg.switch is None:
         return {}
     return {host: [f"sudo ovs-vsctl clear port {puerto} vlan_mode",
                    f"sudo ovs-vsctl clear port {puerto} tag",
                    f"sudo ovs-vsctl clear port {puerto} trunks"]
             for host, puerto in cfg.switch.puerto_por_host.items()}
-
-
-def comandos_switch(plan: PlanBroadcast, cfg: ConfigBroadcast) -> list[str]:
-    """Poda de VLANs en ovs1: cada puerto hacia un servidor lleva solo las
-    VLANs que ese servidor comparte con otro (las únicas que cruzan ovs1).
-
-    Con Q-in-Q habilitado, el puerto de ovs1 hacia cada servidor debe hablar
-    el mismo modo "dot1q-tunnel" que su contraparte en comandos_host(), o el
-    switch no entendería la doble etiqueta que llega -- ambos lados de un
-    mismo enlace físico deben configurarse igual."""
-    if cfg.switch is None:
-        return []
-    cmds = []
-    for host, puerto in sorted(cfg.switch.puerto_por_host.items()):
-        trunks = _trunks(plan.vlans_que_salen(host), cfg.vlan_sin_uso)
-        if cfg.qinq and cfg.qinq_svlan is not None:
-            cmds.append(f"sudo ovs-vsctl set port {puerto} vlan_mode=dot1q-tunnel "
-                        f"tag={cfg.qinq_svlan} trunks={trunks} "
-                        f"other_config:qinq-ethtype={cfg.qinq_ethertype}")
-        else:
-            # Mismo motivo que en comandos_host(): "trunk" a secas cortaría
-            # el acceso de gestión a ovs1 si viaja sin etiqueta por este
-            # mismo puerto.
-            cmds.append(f"sudo ovs-vsctl set port {puerto} vlan_mode=native-untagged "
-                        f"tag=0 trunks={trunks}")
-    return cmds

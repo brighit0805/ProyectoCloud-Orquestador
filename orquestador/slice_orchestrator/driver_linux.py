@@ -72,6 +72,10 @@ class DriverLinux:
     hosts_conocidos: list[Host] = field(default_factory=list)
     # Último reporte de aplicar_control_broadcast (R5): comandos por host y errores.
     ultimo_control_broadcast: dict | None = None
+    # MTU de las interfaces de enlace de las VMs. Con QinQ cada trama lleva dos
+    # etiquetas (8 bytes) y el uplink solo tolera una de más: se baja el MTU
+    # de la VM (1496) para que un paquete de 1500 no se descarte en silencio.
+    mtu_enlaces: int | None = None
 
     # ------------------------------------------------------------ utilidades
     def _registrar(self, accion: str, host_uri: str, recurso: str) -> None:
@@ -135,7 +139,8 @@ class DriverLinux:
 
     # ------------------------------------------------------------------ XML
     @staticmethod
-    def _interfaz_xml(vlan: int | None, mac: str | None, bridge: str) -> str:
+    def _interfaz_xml(vlan: int | None, mac: str | None, bridge: str,
+                      mtu: int | None = None) -> str:
         """XML libvirt de una interfaz de red sobre el bridge OVS del
         worker. Factorizado (13-nov) para que lo use tanto la definición
         inicial de la VM (``_xml_vm``) como conectar/desconectar_interfaz en
@@ -143,9 +148,10 @@ class DriverLinux:
         desconectar después una interfaz que se conectó así."""
         etiqueta = f"<vlan><tag id='{vlan}'/></vlan>" if vlan is not None else ""
         m = f"<mac address='{mac}'/>" if mac else ""
+        t = f"<mtu size='{mtu}'/>" if mtu else ""
         return (f"<interface type='bridge'>{m}<source bridge='{bridge}'/>"
                 f"<virtualport type='openvswitch'/>{etiqueta}"
-                f"<model type='virtio'/></interface>")
+                f"<model type='virtio'/>{t}</interface>")
 
     def _xml_vm(self, nombre_vm: str, vcpu: int, ram_mb: int,
                 volumen: str, redes: list[tuple[str, int]],
@@ -158,11 +164,11 @@ class DriverLinux:
                 red_libvirt: str | None = None) -> str:
         bridge = bridge or self.bridge_provider
 
-        def itf(vlan: int | None, mac: str | None) -> str:
-            return self._interfaz_xml(vlan, mac, bridge)
+        def itf(vlan: int | None, mac: str | None, mtu: int | None = None) -> str:
+            return self._interfaz_xml(vlan, mac, bridge, mtu)
 
         macs = macs or []
-        interfaces = [itf(vlan_id, macs[i] if i < len(macs) else None)
+        interfaces = [itf(vlan_id, macs[i] if i < len(macs) else None, self.mtu_enlaces)
                       for i, (_, vlan_id) in enumerate(redes)]
         if con_acceso:
             if red_libvirt:      # NAT de libvirt (red 'default'): salida a Internet sin tocar el headnode
@@ -557,7 +563,7 @@ class DriverLinux:
         conn = self._conectar(host_uri)
         try:
             dom = conn.lookupByName(nombre_vm)
-            xml = self._interfaz_xml(vlan_id, mac, self._bridge_para(host_uri))
+            xml = self._interfaz_xml(vlan_id, mac, self._bridge_para(host_uri), self.mtu_enlaces)
             dom.attachDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE | libvirt.VIR_DOMAIN_AFFECT_CONFIG)
             self.interfaces_conectadas[clave] = (vlan_id, mac)
         finally:
@@ -581,7 +587,7 @@ class DriverLinux:
                 dom = conn.lookupByName(nombre_vm)
             except libvirt.libvirtError:
                 return      # la VM ya no existe: nada que desconectar
-            xml = self._interfaz_xml(vlan_id, mac, self._bridge_para(host_uri))
+            xml = self._interfaz_xml(vlan_id, mac, self._bridge_para(host_uri), self.mtu_enlaces)
             try:
                 dom.detachDeviceFlags(xml, libvirt.VIR_DOMAIN_AFFECT_LIVE | libvirt.VIR_DOMAIN_AFFECT_CONFIG)
             except libvirt.libvirtError:
